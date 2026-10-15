@@ -36,6 +36,7 @@ mod metrics;
 mod modules;
 mod notify;
 mod paths;
+mod plugin;
 mod power;
 mod schedule;
 mod setup;
@@ -113,7 +114,8 @@ async fn main() {
                    dkbot install [<dir>] [--daemon]\n\
                    dkbot uninstall\n\
                    dkbot doctor                  # diagnostic local\n\
-                   dkbot update [vX.Y.Z]         # mises à jour via releases\n\n\
+                   dkbot update [vX.Y.Z]         # mises à jour via releases\n\
+                   dkbot plugin install|list|remove <id>  # plugins dynamiques (.so, SHA-256)\n\n\
              Installation : cargo install --path . (binaire dans ~/.cargo/bin,\n\
              données dans ~/.config/dakkabot) OU dkbot install — copie directe\n\
              du binaire courant (architecture de la machine) : sans <dir>, dans\n\
@@ -132,7 +134,7 @@ async fn main() {
         if sub == "supervise" {
             std::process::exit(daemon::supervise().await);
         }
-        if sub == "update" || sub == "module" {
+        if sub == "update" || sub == "module" || sub == "plugin" {
             std::process::exit(update::run(&args).await);
         }
         // Commandes héritées NON portées : refuser EXPLICITEMENT au lieu de
@@ -273,11 +275,17 @@ async fn main() {
 
     let token = cfg.token.clone();
     let client_id = cfg.client_id.clone();
+    let plugins = Arc::new(plugin::PluginHost::new());
+    let loaded = plugins.load_dir(&paths::plugins_dir());
+    if !loaded.is_empty() {
+        logger::info(format!("plugins chargés : {}", loaded.join(", ")));
+    }
     let data = Data {
         cfg,
         api,
         state: Arc::new(state),
         catalog,
+        plugins,
     };
 
     // ── 5. Enregistrement des slash commands (AVANT la connexion) ──

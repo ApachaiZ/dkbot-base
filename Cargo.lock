@@ -570,9 +570,11 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "dialoguer",
+ "dkbot-host-api",
  "dotenvy",
  "futures",
  "libc",
+ "libloading",
  "poise",
  "rand 0.8.8",
  "reqwest",
@@ -739,10 +741,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "dkbot-host-api"
+version = "0.1.0"
+
+[[package]]
 name = "dotenvy"
 version = "0.15.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b"
+
+[[package]]
+name = "dummy-plugin"
+version = "0.1.0"
+dependencies = [
+ "dkbot-host-api",
+]
 
 [[package]]
 name = "ecdsa"
@@ -1454,6 +1467,16 @@ name = "libc"
 version = "0.2.190"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ce5d3ddc6d3fa000eb1536d85e147bfe31aacaba692ed6a876f95cb7c855be78"
+
+[[package]]
+name = "libloading"
+version = "0.8.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55"
+dependencies = [
+ "cfg-if",
+ "windows-link",
+]
 
 [[package]]
 name = "linux-raw-sys"

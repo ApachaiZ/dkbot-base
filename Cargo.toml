@@ -22,6 +22,10 @@ opt-level = 3
 lto = "thin"
 codegen-units = 1
 
+[workspace]
+members = [".", "crates/dkbot-host-api", "plugins/dummy-plugin"]
+default-members = ["."]
+
 [dependencies]
 # ── Runtime asynchrone (features réduites au strict nécessaire) ───────────
 tokio = { version = "1", features = [
@@ -48,6 +52,8 @@ russh = { version = "0.64", default-features = false, features = ["ring", "rsa"]
 # ── Données & sérialisation ─────────────────────────────────────────────────
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+libloading = "0.8"
+dkbot-host-api = { path = "crates/dkbot-host-api" }
 
 # ── Mise à jour du binaire (`dkbot update`) ───────────────────────────────
 # HTTP pur Rust (rustls) : téléchargement des releases GitHub + vérification
