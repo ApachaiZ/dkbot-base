@@ -31,7 +31,13 @@ pub fn build_groups(plugins: &PluginHost) -> Vec<serenity::CreateCommand> {
                 command.name.clone(),
                 command.description.clone(),
             );
-            for arg in command.args {
+            // Discord impose : options requises avant les optionnelles.
+            // (L'autocomplétion force player/item en optionnels, donc il faut
+            // réordonner selon le required EFFECTIF — ex. tpto : x/y/z requis
+            // avant le joueur suggéré.)
+            let mut args = command.args.clone();
+            args.sort_by_key(|a| !(a.required && !arg_kind_is_autocomplete(&a.kind)));
+            for arg in args {
                 sub = sub.add_sub_option(option_from_manifest(&arg));
             }
             group = group.add_option(sub);
@@ -357,6 +363,47 @@ mod tests {
         let embed = render_result("x", "réponse illisible");
         let json = serde_json::to_value(&embed).expect("sérialisable");
         assert_eq!(json["description"], "réponse illisible");
+    }
+
+    #[test]
+    fn required_options_come_before_optional() {
+        // tpto : player (autocomplete → optionnel) + x/y/z requis.
+        // Discord rejette l'enregistrement si un optionnel précède un requis.
+        let raw = r#"{"group":"dw","description":"","commands":[{"name":"tpto","description":"","args":[
+            {"name":"player","kind":"player","required":true},
+            {"name":"x","kind":"string","required":true},
+            {"name":"y","kind":"string","required":true},
+            {"name":"z","kind":"string","required":true}]}]}"#;
+        let manifest = parse_manifest(raw, "dragonwilds");
+        let mut group = serenity::CreateCommand::new(manifest.group.clone());
+        for command in manifest.commands {
+            let mut sub = serenity::CreateCommandOption::new(
+                serenity::CommandOptionType::SubCommand,
+                command.name.clone(),
+                command.description.clone(),
+            );
+            let mut args = command.args.clone();
+            args.sort_by_key(|a| !(a.required && !arg_kind_is_autocomplete(&a.kind)));
+            for arg in args {
+                sub = sub.add_sub_option(option_from_manifest(&arg));
+            }
+            group = group.add_option(sub);
+        }
+        let json = serde_json::to_value(&group).expect("sérialisable");
+        let names: Vec<&str> = json["options"][0]["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|o| o["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, vec!["x", "y", "z", "player"]);
+        let flags: Vec<bool> = json["options"][0]["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|o| o["required"].as_bool().unwrap())
+            .collect();
+        assert_eq!(flags, vec![true, true, true, false]);
     }
 
     #[test]

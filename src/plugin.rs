@@ -414,6 +414,28 @@ mod tests {
             let args = tp["options"].as_array().expect("arguments de tp");
             assert!(args.iter().all(|a| a["type"] == 3), "STRING : {json}");
             assert!(args.iter().any(|a| a["name"] == "from") && args.iter().any(|a| a["name"] == "to"));
+            // Règle Discord : dans chaque sous-commande, aucun optionnel ne
+            // peut précéder un requis (l'autocomplétion rend player/item
+            // optionnels — le tri dans build_groups doit le garantir).
+            let groups = json.as_array().expect("liste de commandes");
+            for group in groups {
+                for sub in group["options"].as_array().unwrap() {
+                    let mut seen_optional = false;
+                    for arg in sub["options"].as_array().unwrap() {
+                        let required = arg["required"].as_bool().unwrap_or(false);
+                        if required {
+                            assert!(
+                                !seen_optional,
+                                "optionnel avant requis dans {}/{} : {json}",
+                                group["name"],
+                                sub["name"]
+                            );
+                        } else {
+                            seen_optional = true;
+                        }
+                    }
+                }
+            }
             let out = host
                 .run("dragonwilds", "cheats", "{\"caller\":{\"is_owner\":true},\"args\":{}}")
                 .unwrap();
