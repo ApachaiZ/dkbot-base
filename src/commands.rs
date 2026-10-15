@@ -11,6 +11,8 @@ use serenity::{
     MessageId,
 };
 use std::sync::Arc;
+
+use crate::plugin::PluginHost;
 use std::time::Duration;
 
 use crate::api::Api;
@@ -36,6 +38,8 @@ pub struct Data {
     pub api: Arc<Api>,
     pub state: Arc<State>,
     pub catalog: &'static Catalog,
+    /// Hôte de plugins dynamiques (dossier `plugins/`, ABI versionné).
+    pub plugins: Arc<PluginHost>,
 }
 
 /// Réponse standard du bot : éphémère par défaut, mentions désactivées.
@@ -767,6 +771,70 @@ pub async fn help(ctx: Context<'_>) -> Result<(), Error> {
 
 // ── Liste des commandes (ordre d'enregistrement Discord) ───────────────────
 
+/// 🔌 Plugins dynamiques (ABI versionné) — owner.
+#[poise::command(slash_command, ephemeral)]
+pub async fn plugin_command(
+    ctx: Context<'_>,
+    #[description = "Nom du plugin (optionnel)"] nom: Option<String>,
+    #[description = "Commande (optionnel)"] commande: Option<String>,
+    #[description = "Arguments JSON (optionnel)"] args: Option<String>,
+) -> Result<(), Error> {
+    if !ctx.data().state.is_owner(&ctx.author().id.to_string()) {
+        ctx.send(reply(card(
+            "🔌 Plugins",
+            "Réservé au propriétaire.",
+            Tone::Bad,
+            None,
+        )))
+        .await?;
+        return Ok(());
+    }
+    let host = &ctx.data().plugins;
+    let names = host.names();
+    let Some(nom) = nom else {
+        let body = if names.is_empty() {
+            "Aucun plugin chargé (dossier `plugins/` vide).".to_string()
+        } else {
+            format!("**Plugins chargés**\n{}", names.join("\n"))
+        };
+        ctx.send(reply(card("🔌 Plugins", &body, Tone::Good, None)))
+            .await?;
+        return Ok(());
+    };
+    let Some(commande) = commande else {
+        match host.list_commands(&nom) {
+            Ok(cmds) => {
+                let body = if cmds.is_empty() {
+                    format!("**{nom}** n'expose aucune commande.")
+                } else {
+                    format!("**{nom}** — commandes : {}", cmds.join(", "))
+                };
+                ctx.send(reply(card("🔌 Plugins", &body, Tone::Good, None)))
+                    .await?;
+            }
+            Err(e) => {
+                ctx.send(reply(card("🔌 Plugins", &e, Tone::Bad, None)))
+                    .await?;
+            }
+        }
+        return Ok(());
+    };
+    let args = args.unwrap_or_else(|| "{}".to_string());
+    match host.run(&nom, &commande, &args) {
+        Ok(result) => {
+            let body = format!("**{nom}** `{commande}` →\n```json\n{result}\n```");
+            ctx.send(reply(card("🔌 Plugins", &body, Tone::Good, None)))
+                .await?;
+        }
+        Err(e) => {
+            ctx.send(reply(card("🔌 Plugins", &e, Tone::Bad, None)))
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+
 pub fn commands() -> Vec<poise::Command<Data, Error>> {
     vec![
         status(),
@@ -775,6 +843,7 @@ pub fn commands() -> Vec<poise::Command<Data, Error>> {
         restart(),
         reboot(),
         ping(),
+        plugin_command(),
         target(),
         server(),
         users(),

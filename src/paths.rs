@@ -12,6 +12,11 @@ pub fn config_dir() -> PathBuf {
     PathBuf::from(".config.d")
 }
 
+/// Répertoire des plugins dynamiques (`.so`/`.dylib`/`.dll`).
+pub fn plugins_dir() -> PathBuf {
+    PathBuf::from("plugins")
+}
+
 /// Fichier d'environnement (`.config.d/.env`).
 pub fn env_file() -> PathBuf {
     config_dir().join(".env")

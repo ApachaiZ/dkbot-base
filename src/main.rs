@@ -36,6 +36,7 @@ mod metrics;
 mod modules;
 mod notify;
 mod paths;
+mod plugin;
 mod power;
 mod schedule;
 mod setup;
@@ -273,11 +274,17 @@ async fn main() {
 
     let token = cfg.token.clone();
     let client_id = cfg.client_id.clone();
+    let plugins = Arc::new(plugin::PluginHost::new());
+    let loaded = plugins.load_dir(&paths::plugins_dir());
+    if !loaded.is_empty() {
+        logger::info(format!("plugins chargés : {}", loaded.join(", ")));
+    }
     let data = Data {
         cfg,
         api,
         state: Arc::new(state),
         catalog,
+        plugins,
     };
 
     // ── 5. Enregistrement des slash commands (AVANT la connexion) ──
