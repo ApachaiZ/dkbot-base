@@ -45,10 +45,116 @@ fn option_from_manifest(arg: &ManifestArg) -> serenity::CreateCommandOption {
     let kind = match arg.kind.as_str() {
         "int" => serenity::CommandOptionType::Integer,
         "bool" => serenity::CommandOptionType::Boolean,
-        _ => serenity::CommandOptionType::String,
+        _ => serenity::CommandOptionType::String, // "string" | "player" | "item"
     };
-    serenity::CreateCommandOption::new(kind, arg.name.clone(), arg.description.clone())
-        .required(arg.required)
+    let autocomplete = matches!(arg.kind.as_str(), "player" | "item");
+    let option = serenity::CreateCommandOption::new(kind, arg.name.clone(), arg.description.clone());
+    if autocomplete {
+        // Discord refuse required + autocomplete : la validation d'absence
+        // reste faite par le plugin (message d'erreur propre).
+        option.set_autocomplete(true)
+    } else {
+        option.required(arg.required)
+    }
+}
+
+/// L'argument a-t-il une sémantique d'autocomplétion ? (kind player/item)
+fn arg_kind_is_autocomplete(kind: &str) -> bool {
+    matches!(kind, "player" | "item")
+}
+
+/// Répond aux interactions d'AUTOCOMPLÈTE des groupes de plugins (/dw …) :
+/// le plugin fournit les suggestions (pseudos de joueurs, noms d'objets…).
+/// Renvoie `true` si l'interaction a été consommée.
+pub async fn handle_plugin_autocomplete(
+    ctx: &serenity::Context,
+    interaction: &serenity::Interaction,
+    plugins: &Arc<PluginHost>,
+    state: &State,
+) -> bool {
+    let serenity::Interaction::Autocomplete(command) = interaction else {
+        return false;
+    };
+    let group = command.data.name.clone();
+    let Some((plugin_name, manifest)) = plugins
+        .manifests()
+        .into_iter()
+        .find(|(_, m)| m.group == group)
+    else {
+        return false;
+    };
+    let Some(focused) = command.data.autocomplete() else {
+        return false;
+    };
+    // Nom de la sous-commande (premier niveau des options).
+    let subcommand_name = command
+        .data
+        .options()
+        .first()
+        .map(|o| o.name.to_string())
+        .unwrap_or_default();
+    let kind = manifest
+        .commands
+        .iter()
+        .find(|c| c.name == subcommand_name)
+        .and_then(|c| c.args.iter().find(|a| a.name == focused.name))
+        .map(|a| a.kind.clone())
+        .unwrap_or_default();
+    if !arg_kind_is_autocomplete(&kind) {
+        let _ = command.create_response(
+            &ctx.http,
+            serenity::CreateInteractionResponse::Autocomplete(
+                serenity::CreateAutocompleteResponse::new().set_choices(vec![]),
+            ),
+        );
+        return true;
+    }
+
+    let caller = serde_json::json!({
+        "id": command.user.id.to_string(),
+        "is_owner": state.is_owner(&command.user.id.to_string()),
+        "roles": command
+            .member
+            .as_ref()
+            .map(|m| m.roles.iter().map(|r| r.get().to_string()).collect::<Vec<_>>())
+            .unwrap_or_default(),
+    });
+    let call = serde_json::json!({
+        "caller": caller,
+        "args": {
+            "command": subcommand_name,
+            "option": focused.name,
+            "value": focused.value,
+        }
+    })
+    .to_string();
+    let plugins = plugins.clone();
+    let plugin_name_c = plugin_name.clone();
+    let outcome = tokio::task::spawn_blocking(move || {
+        plugins.run(&plugin_name_c, "__ac", &call)
+    })
+    .await;
+
+    let choices: Vec<serenity::AutocompleteChoice> = match outcome {
+        Ok(Ok(raw)) => serde_json::from_str::<Vec<String>>(&raw)
+            .unwrap_or_default()
+            .into_iter()
+            .take(25)
+            .map(|name| {
+                // Nom et valeur limités à 100 caractères par Discord.
+                let name: String = name.chars().take(100).collect();
+                serenity::AutocompleteChoice::new(name.clone(), name)
+            })
+            .collect(),
+        _ => vec![],
+    };
+    let _ = command.create_response(
+        &ctx.http,
+        serenity::CreateInteractionResponse::Autocomplete(
+            serenity::CreateAutocompleteResponse::new().set_choices(choices),
+        ),
+    );
+    true
 }
 
 /// Rendu d'un résultat de plugin : carte (convention `{"card": …}`) quand le
@@ -264,5 +370,37 @@ mod tests {
         let option = option_from_manifest(&arg);
         let built = serenity::CreateCommand::new("g").add_option(option);
         assert!(serde_json::to_value(&built).is_ok());
+    }
+
+    #[test]
+    fn player_and_item_kinds_enable_autocomplete() {
+        for kind in ["player", "item"] {
+            let arg = ManifestArg {
+                name: "cible".into(),
+                description: String::new(),
+                kind: kind.into(),
+                required: true, // forcé à false par Discord (required + autocomplete interdit)
+            };
+            let option = option_from_manifest(&arg);
+            let built = serenity::CreateCommand::new("g").add_option(option);
+            let json = serde_json::to_value(&built).expect("sérialisable");
+            let opt = &json["options"][0];
+            assert_eq!(opt["type"], 3, "STRING");
+            assert_eq!(opt["autocomplete"], true, "{kind}");
+            assert_eq!(opt["required"], false, "required forcé à false");
+        }
+        // Un argument texte ordinaire n'a pas d'autocomplete et garde required.
+        let arg = ManifestArg {
+            name: "message".into(),
+            description: String::new(),
+            kind: "string".into(),
+            required: true,
+        };
+        let option = option_from_manifest(&arg);
+        let built = serenity::CreateCommand::new("g").add_option(option);
+        let json = serde_json::to_value(&built).expect("sérialisable");
+        let opt = &json["options"][0];
+        assert_eq!(opt["autocomplete"], false);
+        assert_eq!(opt["required"], true);
     }
 }

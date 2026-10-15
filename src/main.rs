@@ -329,6 +329,13 @@ async fn main() {
                         &data.state,
                     )
                     .await;
+                    crate::plugin_commands::handle_plugin_autocomplete(
+                        ctx,
+                        interaction,
+                        &data.plugins,
+                        &data.state,
+                    )
+                    .await;
                 }
                 Ok(())
             })
