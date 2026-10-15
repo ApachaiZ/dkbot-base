@@ -1,0 +1,53 @@
+[Unit]
+# Unité système de référence pour dakkabot. Adaptez les chemins à votre
+# installation (binaire, répertoire, .env). Le bot est lancé en
+# --non-interactive : jamais de prompt, exit 78 = erreur de configuration
+# (pas de redémarrage en boucle).
+Description=dakkabot — Discord bot for fine-grained VPS control
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dakkabot
+Group=dakkabot
+WorkingDirectory=/opt/dakkabot
+
+# systemd injecte directement les variables du fichier .env.
+# Format KEY=VALUE, compatible avec le chargeur .env du bot.
+EnvironmentFile=/opt/dakkabot/.config.d/.env
+
+# Binaire unique (cargo build --release ou cargo install --git).
+# --root : toutes les données (config, logs, assets) dans ce dossier.
+ExecStart=/opt/dakkabot/dkbot run --root /opt/dakkabot --non-interactive
+
+Restart=on-failure
+RestartSec=5s
+# exit 78 (configuration) ne redémarre PAS en boucle.
+RestartPreventExitStatus=78
+
+# Logs vers journald (le bot écrit en parallèle dans logs/dakkabot.log).
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dakkabot
+
+# ── Durcissement ──
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+# Préfixe « - » : systemd tolère l'absence du chemin au chargement.
+# ⚠ Si vous utilisez des cibles SSH : ProtectHome=true rend ~/.ssh en
+# lecture seule. Pointez SSH_KNOWN_HOSTS_FILE vers un chemin INSCRIPTIBLE
+# (le backend refuse de se connecter s'il ne peut pas mémoriser la clé
+# d'hôte — TOFU fail-closed). Exemple : ajouter
+#   Environment=SSH_KNOWN_HOSTS_FILE=/opt/dakkabot/.config.d/known_hosts
+ReadWritePaths=-/opt/dakkabot/.config.d -/opt/dakkabot/logs
+
+[Install]
+WantedBy=multi-user.target

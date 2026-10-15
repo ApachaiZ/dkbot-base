@@ -1,0 +1,12 @@
+[package]
+name = "dummy-plugin"
+version = "0.1.0"
+edition = "2021"
+description = "Plugin factice — preuve de concept du plugin host de dkbot-base"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+dkbot-host-api = { path = "../../crates/dkbot-host-api" }
