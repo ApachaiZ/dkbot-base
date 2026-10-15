@@ -83,23 +83,32 @@ fn discord_error_code(err: &serenity::Error) -> Option<u64> {
     }
 }
 
-/// Enregistre les commandes si nécessaire (avant la connexion gateway).
-pub async fn deploy_commands_if_needed(
-    http: &serenity::Http,
+/// Construit la liste complète des commandes (cœur + groupes plugins) et
+/// l'empreinte de déploiement correspondante.
+fn build_payload(
     cfg: &Config,
-    catalog: &Catalog,
     commands: &[poise::Command<Data, Error>],
     plugins: &crate::plugin::PluginHost,
-) -> Result<(), Error> {
+) -> (Vec<serenity::CreateCommand>, Vec<Value>, String) {
     let mut built = poise::builtins::create_application_commands(commands);
-    // Groupes dynamiques des plugins (manifestes → vraies slash commands).
     let plugin_groups = crate::plugin_commands::build_groups(plugins);
     let plugins_json: Vec<Value> = plugin_groups
         .iter()
         .map(|c| serde_json::to_value(c).unwrap_or(Value::Null))
         .collect();
     built.extend(plugin_groups);
-    // Résumé compact des groupes enregistrés (ex. « groupes plugins : dw (19), saves (3) »).
+    let commands_json: Vec<Value> = built
+        .iter()
+        .map(|c| serde_json::to_value(c).unwrap_or(Value::Null))
+        .collect();
+    let mut hash_payload = commands_json.clone();
+    hash_payload.extend(plugins_json.clone());
+    let hash = commands_hash(cfg, &hash_payload);
+    (built, plugins_json, hash)
+}
+
+/// Résumé compact des groupes enregistrés (ex. « groupes plugins : dw (19), saves (3) »).
+fn groups_summary(plugins_json: &[Value]) -> Option<String> {
     let summary: Vec<String> = plugins_json
         .iter()
         .filter_map(|c| {
@@ -108,13 +117,50 @@ pub async fn deploy_commands_if_needed(
             Some(format!("{name} ({n})"))
         })
         .collect();
-    if !summary.is_empty() {
-        logger::info(format!("groupes plugins : {}", summary.join(", ")));
+    if summary.is_empty() {
+        None
+    } else {
+        Some(summary.join(", "))
     }
-    let commands_json: Vec<Value> = built
-        .iter()
-        .map(|c| serde_json::to_value(c).unwrap_or(Value::Null))
-        .collect();
+}
+
+/// Re-synchronise les slash commands de la guilde si les manifestes des
+/// plugins ont changé (ex. switch cheat basculé : les commandes apparaissent
+/// ou disparaissent sans redémarrage). Appelé après chaque interaction de
+/// plugin. Renvoie `true` si un ré-enregistrement a eu lieu.
+pub async fn sync_if_changed(
+    ctx: &serenity::Context,
+    commands: &[poise::Command<Data, Error>],
+    data: &Data,
+) -> Result<bool, Error> {
+    let (built, _, hash) = build_payload(&data.cfg, commands, &data.plugins);
+    let previous = read_deploy_state(&data.cfg.guild_id);
+    if previous.as_ref().map(|(_, h)| h == &hash).unwrap_or(false) {
+        return Ok(false);
+    }
+    for guild in &data.cfg.guild_ids {
+        let guild_id: serenity::GuildId = guild.parse::<u64>().map_err(|_| {
+            ExitError::config(format!("DISCORD_GUILD_IDS : guilde invalide {guild}"))
+        })?.into();
+        guild_id.set_commands(&ctx.http, built.clone()).await?;
+    }
+    write_deploy_state(&data.cfg.guild_ids, &hash);
+    logger::info(data.catalog.audit.commands_registered);
+    Ok(true)
+}
+
+/// Enregistre les commandes si nécessaire (avant la connexion gateway).
+pub async fn deploy_commands_if_needed(
+    http: &serenity::Http,
+    cfg: &Config,
+    catalog: &Catalog,
+    commands: &[poise::Command<Data, Error>],
+    plugins: &crate::plugin::PluginHost,
+) -> Result<(), Error> {
+    let (built, plugins_json, hash) = build_payload(cfg, commands, plugins);
+    if let Some(summary) = groups_summary(&plugins_json) {
+        logger::info(format!("groupes plugins : {summary}"));
+    }
 
     // ── Purge des commandes GLOBALES (à chaque démarrage) ──
     match http
@@ -129,9 +175,6 @@ pub async fn deploy_commands_if_needed(
     }
 
     // ── Skip si rien n'a changé ──
-    let mut hash_payload = commands_json.clone();
-    hash_payload.extend(plugins_json);
-    let hash = commands_hash(cfg, &hash_payload);
     let previous = read_deploy_state(&cfg.guild_id);
     if previous.as_ref().map(|(_, h)| h == &hash).unwrap_or(false) {
         logger::info(catalog.audit.commands_skipped);

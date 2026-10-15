@@ -322,7 +322,7 @@ async fn main() {
                 // Interactions des groupes de plugins (/dw …) : consommées
                 // ici, après l'échec silencieux de poise (commande inconnue).
                 if let serenity::FullEvent::InteractionCreate { interaction } = event {
-                    crate::plugin_commands::handle_plugin_interaction(
+                    let consumed = crate::plugin_commands::handle_plugin_interaction(
                         ctx,
                         interaction,
                         &data.plugins,
@@ -336,6 +336,16 @@ async fn main() {
                         &data.state,
                     )
                     .await;
+                    // Les manifestes peuvent changer en cours d'exécution
+                    // (ex. switch cheat : commandes masquées ou réaffichées) :
+                    // re-synchronise les slash commands si nécessaire.
+                    if consumed {
+                        if let Err(e) =
+                            deploy::sync_if_changed(ctx, &framework.options().commands, data).await
+                        {
+                            logger::error(format!("resynchronisation des commandes : {e}"));
+                        }
+                    }
                 }
                 Ok(())
             })

@@ -201,6 +201,10 @@ pub struct ManifestCommand {
     pub description: String,
     #[serde(default)]
     pub args: Vec<ManifestArg>,
+    /// "admin" : commande enregistrée dans un groupe séparé `{groupe}-admin`,
+    /// visible uniquement par les administrateurs (et le propriétaire).
+    #[serde(default)]
+    pub permissions: Option<String>,
 }
 
 /// Le manifeste complet d'un plugin : le groupe Discord (/dw, /saves…), sa
@@ -264,6 +268,7 @@ pub fn parse_manifest(raw: &str, plugin_name: &str) -> Manifest {
                         name: name.clone(),
                         description: String::new(),
                         args: Vec::new(),
+                        permissions: None,
                     }),
                     other => serde_json::from_value::<ManifestCommand>(other.clone()).ok(),
                 })
@@ -405,10 +410,24 @@ mod tests {
                 .and_then(|arr| arr.iter().find(|g| g["name"] == "dw"))
                 .expect("commande /dw dans le JSON");
             let options = dw["options"].as_array().expect("options du groupe dw");
-            assert_eq!(options.len(), 19, "19 sous-commandes : {json}");
+            // cheats est parti dans le groupe admin séparé : 18 ici, 1 là-bas.
+            assert_eq!(options.len(), 18, "18 sous-commandes : {json}");
             assert!(options.iter().all(|o| o["type"] == 1), "SUB_COMMAND : {json}");
             let noms: Vec<&str> = options.iter().map(|o| o["name"].as_str().unwrap()).collect();
-            assert!(noms.contains(&"tp") && noms.contains(&"cheats"), "{noms:?}");
+            assert!(noms.contains(&"tp") && !noms.contains(&"cheats"), "{noms:?}");
+            // Groupe admin : /dw-admin avec cheats, réservé aux administrateurs.
+            let dw_admin = json
+                .as_array()
+                .and_then(|arr| arr.iter().find(|g| g["name"] == "dw-admin"))
+                .expect("commande /dw-admin dans le JSON");
+            let admin_options = dw_admin["options"].as_array().expect("options admin");
+            assert_eq!(admin_options.len(), 1);
+            assert_eq!(admin_options[0]["name"], "cheats");
+            assert_eq!(
+                dw_admin["default_member_permissions"].as_str().unwrap(),
+                "8", // Permissions::ADMINISTRATOR
+                "groupe admin réservé aux administrateurs : {json}"
+            );
             // Les arguments typés arrivent aussi (ex. tp from/to en STRING).
             let tp = options.iter().find(|o| o["name"] == "tp").unwrap();
             let args = tp["options"].as_array().expect("arguments de tp");

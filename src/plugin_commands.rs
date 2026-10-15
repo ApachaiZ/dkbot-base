@@ -10,41 +10,80 @@ use poise::serenity_prelude as serenity;
 use crate::plugin::{ManifestArg, PluginHost};
 use crate::state::State;
 
+/// Suffixe des groupes réservés aux administrateurs (commandes `permissions:
+/// "admin"` du manifeste) : `/dw-admin`, `/saves-admin`…
+pub const ADMIN_GROUP_SUFFIX: &str = "-admin";
+
+/// Le groupe de l'interaction correspond-il au groupe du manifeste ?
+/// (accepte aussi la variante `-admin` issue de la séparation admin)
+pub fn group_matches(manifest_group: &str, interaction_group: &str) -> bool {
+    interaction_group == manifest_group
+        || interaction_group == format!("{manifest_group}{ADMIN_GROUP_SUFFIX}")
+}
+
 /// Construit un `CreateCommand` (groupe) par plugin, avec une subcommand par
-/// commande déclarée et ses options typées.
+/// commande déclarée et ses options typées. Les commandes `permissions:
+/// "admin"` partent dans un groupe séparé `{groupe}-admin` visible uniquement
+/// par les administrateurs (le propriétaire le voit toujours).
 pub fn build_groups(plugins: &PluginHost) -> Vec<serenity::CreateCommand> {
     let mut groups = Vec::new();
     for (plugin_name, manifest) in plugins.manifests() {
         if manifest.group.is_empty() || manifest.commands.is_empty() {
             continue;
         }
-        let mut group = serenity::CreateCommand::new(manifest.group.clone());
-        let description = if manifest.description.is_empty() {
-            format!("Commandes du plugin {plugin_name}")
-        } else {
-            manifest.description.clone()
-        };
-        group = group.description(description);
-        for command in manifest.commands {
-            let mut sub = serenity::CreateCommandOption::new(
-                serenity::CommandOptionType::SubCommand,
-                command.name.clone(),
-                command.description.clone(),
-            );
-            // Discord impose : options requises avant les optionnelles.
-            // (L'autocomplétion force player/item en optionnels, donc il faut
-            // réordonner selon le required EFFECTIF — ex. tpto : x/y/z requis
-            // avant le joueur suggéré.)
-            let mut args = command.args.clone();
-            args.sort_by_key(|a| !(a.required && !arg_kind_is_autocomplete(&a.kind)));
-            for arg in args {
-                sub = sub.add_sub_option(option_from_manifest(&arg));
-            }
-            group = group.add_option(sub);
+        let (admin_cmds, normal_cmds): (Vec<_>, Vec<_>) = manifest
+            .commands
+            .iter()
+            .partition(|c| c.permissions.as_deref() == Some("admin"));
+        groups.push(build_group(&plugin_name, &manifest, &normal_cmds, false));
+        if !admin_cmds.is_empty() {
+            groups.push(build_group(&plugin_name, &manifest, &admin_cmds, true));
         }
-        groups.push(group);
     }
     groups
+}
+
+fn build_group(
+    plugin_name: &str,
+    manifest: &crate::plugin::Manifest,
+    commands: &[&crate::plugin::ManifestCommand],
+    admin: bool,
+) -> serenity::CreateCommand {
+    let name = if admin {
+        format!("{}{ADMIN_GROUP_SUFFIX}", manifest.group)
+    } else {
+        manifest.group.clone()
+    };
+    let mut group = serenity::CreateCommand::new(name);
+    let description = if manifest.description.is_empty() {
+        format!("Commandes du plugin {plugin_name}")
+    } else {
+        manifest.description.clone()
+    };
+    group = group.description(description);
+    if admin {
+        // Visible uniquement par les administrateurs de la guilde (et le
+        // propriétaire, qui contourne toutes les permissions Discord).
+        group = group.default_member_permissions(serenity::Permissions::ADMINISTRATOR);
+    }
+    for command in commands {
+        let mut sub = serenity::CreateCommandOption::new(
+            serenity::CommandOptionType::SubCommand,
+            command.name.clone(),
+            command.description.clone(),
+        );
+        // Discord impose : options requises avant les optionnelles.
+        // (L'autocomplétion force player/item en optionnels, donc il faut
+        // réordonner selon le required EFFECTIF — ex. tpto : x/y/z requis
+        // avant le joueur suggéré.)
+        let mut args = command.args.clone();
+        args.sort_by_key(|a| !(a.required && !arg_kind_is_autocomplete(&a.kind)));
+        for arg in args {
+            sub = sub.add_sub_option(option_from_manifest(&arg));
+        }
+        group = group.add_option(sub);
+    }
+    group
 }
 
 fn option_from_manifest(arg: &ManifestArg) -> serenity::CreateCommandOption {
@@ -85,7 +124,7 @@ pub async fn handle_plugin_autocomplete(
     let Some((plugin_name, manifest)) = plugins
         .manifests()
         .into_iter()
-        .find(|(_, m)| m.group == group)
+        .find(|(_, m)| group_matches(&m.group, &group))
     else {
         return false;
     };
@@ -249,7 +288,7 @@ pub async fn handle_plugin_interaction(
     let Some((plugin_name, _)) = plugins
         .manifests()
         .into_iter()
-        .find(|(_, m)| m.group == group)
+        .find(|(_, m)| group_matches(&m.group, &group))
     else {
         return false;
     };
@@ -422,6 +461,23 @@ mod tests {
             .map(|o| o["required"].as_bool().unwrap())
             .collect();
         assert_eq!(flags, vec![true, true, true, false]);
+    }
+
+    #[test]
+    fn group_matches_accepts_admin_variant() {
+        assert!(group_matches("dw", "dw"));
+        assert!(group_matches("dw", "dw-admin"));
+        assert!(!group_matches("dw", "saves"));
+        assert!(!group_matches("dw", "dwadmin"));
+    }
+
+    #[test]
+    fn manifest_keeps_admin_permissions() {
+        let m = parse_manifest(
+            r#"{"group":"dw","commands":[{"name":"cheats","permissions":"admin","args":[]}]}"#,
+            "x",
+        );
+        assert_eq!(m.commands[0].permissions.as_deref(), Some("admin"));
     }
 
     #[test]
