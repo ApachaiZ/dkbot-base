@@ -256,6 +256,14 @@ mod tests {
             host.run("dummy-plugin", "ping", "{}").unwrap(),
             "{\"plugin\":\"dummy-plugin\",\"reply\":\"pong\"}"
         );
+        if loaded.contains(&"dragonwilds".to_string()) {
+            let cmds = host.list_commands("dragonwilds").unwrap();
+            assert!(cmds.contains(&"tp".to_string()), "commandes : {cmds:?}");
+            let out = host
+                .run("dragonwilds", "cheats", "{\"caller\":{\"is_owner\":true},\"args\":{}}")
+                .unwrap();
+            assert!(out.contains("cheats_enabled"), "réponse : {out}");
+        }
     }
 
     #[test]
