@@ -99,6 +99,18 @@ pub async fn deploy_commands_if_needed(
         .map(|c| serde_json::to_value(c).unwrap_or(Value::Null))
         .collect();
     built.extend(plugin_groups);
+    // Résumé compact des groupes enregistrés (ex. « groupes plugins : dw (19), saves (3) »).
+    let summary: Vec<String> = plugins_json
+        .iter()
+        .filter_map(|c| {
+            let name = c.get("name")?.as_str()?;
+            let n = c.get("options")?.as_array()?.len();
+            Some(format!("{name} ({n})"))
+        })
+        .collect();
+    if !summary.is_empty() {
+        logger::info(format!("groupes plugins : {}", summary.join(", ")));
+    }
     let commands_json: Vec<Value> = built
         .iter()
         .map(|c| serde_json::to_value(c).unwrap_or(Value::Null))

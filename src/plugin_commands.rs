@@ -90,6 +90,7 @@ pub async fn handle_plugin_autocomplete(
         return false;
     };
     let Some(focused) = command.data.autocomplete() else {
+        crate::logger::warn(format!("autocomplete {group} : aucun option focus"));
         return false;
     };
     // Nom de la sous-commande (premier niveau des options).
@@ -115,6 +116,10 @@ pub async fn handle_plugin_autocomplete(
         );
         return true;
     }
+    crate::logger::info(format!(
+        "autocomplete /{group} {subcommand_name}.{} = {:?} (kind {kind})",
+        focused.name, focused.value
+    ));
 
     let caller = serde_json::json!({
         "id": command.user.id.to_string(),
@@ -141,8 +146,8 @@ pub async fn handle_plugin_autocomplete(
     })
     .await;
 
-    let choices: Vec<serenity::AutocompleteChoice> = match outcome {
-        Ok(Ok(raw)) => serde_json::from_str::<Vec<String>>(&raw)
+    let choices: Vec<serenity::AutocompleteChoice> = match &outcome {
+        Ok(Ok(raw)) => serde_json::from_str::<Vec<String>>(raw)
             .unwrap_or_default()
             .into_iter()
             .take(25)
@@ -152,14 +157,27 @@ pub async fn handle_plugin_autocomplete(
                 serenity::AutocompleteChoice::new(name.clone(), name)
             })
             .collect(),
-        _ => vec![],
+        Ok(Err(e)) => {
+            crate::logger::error(format!("autocomplete plugin erreur : {e}"));
+            vec![]
+        }
+        Err(join) => {
+            crate::logger::error(format!("autocomplete tâche interrompue : {join}"));
+            vec![]
+        }
     };
-    let _ = command.create_response(
-        &ctx.http,
-        serenity::CreateInteractionResponse::Autocomplete(
-            serenity::CreateAutocompleteResponse::new().set_choices(choices),
-        ),
-    );
+    crate::logger::info(format!("autocomplete → {} suggestions", choices.len()));
+    if let Err(e) = command
+        .create_response(
+            &ctx.http,
+            serenity::CreateInteractionResponse::Autocomplete(
+                serenity::CreateAutocompleteResponse::new().set_choices(choices),
+            ),
+        )
+        .await
+    {
+        crate::logger::error(format!("autocomplete réponse refusée : {e}"));
+    }
     true
 }
 

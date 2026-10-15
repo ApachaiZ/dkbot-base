@@ -436,6 +436,37 @@ mod tests {
                     }
                 }
             }
+            // Balayage : TOUS les arguments player/item de TOUS les plugins
+            // doivent être des options STRING avec autocomplete (sinon le
+            // handler __ac ne serait jamais appelé pour eux).
+            for (plugin_name, manifest) in host.manifests() {
+                for command in &manifest.commands {
+                    for arg in &command.args {
+                        if !matches!(arg.kind.as_str(), "player" | "item") {
+                            continue;
+                        }
+                        let group = groups
+                            .iter()
+                            .find(|g| g["name"].as_str() == Some(manifest.group.as_str()))
+                            .expect("groupe du manifeste");
+                        let sub = group["options"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .find(|s| s["name"].as_str() == Some(command.name.as_str()))
+                            .unwrap_or_else(|| panic!("sous-commande {} du plugin {plugin_name}", command.name));
+                        let opt = sub["options"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .find(|o| o["name"].as_str() == Some(arg.name.as_str()))
+                            .unwrap_or_else(|| panic!("option {}.{} du plugin {plugin_name}", command.name, arg.name));
+                        assert_eq!(opt["autocomplete"], true, "{plugin_name}/{}.{} : {json}", command.name, arg.name);
+                        assert_eq!(opt["type"], 3, "STRING attendu pour {plugin_name}/{}.{}", command.name, arg.name);
+                        assert_eq!(opt["required"], false, "{plugin_name}/{}.{} doit être optionnel", command.name, arg.name);
+                    }
+                }
+            }
             let out = host
                 .run("dragonwilds", "cheats", "{\"caller\":{\"is_owner\":true},\"args\":{}}")
                 .unwrap();
