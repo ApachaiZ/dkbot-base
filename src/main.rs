@@ -114,7 +114,8 @@ async fn main() {
                    dkbot install [<dir>] [--daemon]\n\
                    dkbot uninstall\n\
                    dkbot doctor                  # diagnostic local\n\
-                   dkbot update [vX.Y.Z]         # mises à jour via releases\n\n\
+                   dkbot update [vX.Y.Z]         # mises à jour via releases\n\
+                   dkbot plugin install|list|remove <id>  # plugins dynamiques (.so, SHA-256)\n\n\
              Installation : cargo install --path . (binaire dans ~/.cargo/bin,\n\
              données dans ~/.config/dakkabot) OU dkbot install — copie directe\n\
              du binaire courant (architecture de la machine) : sans <dir>, dans\n\
@@ -133,7 +134,7 @@ async fn main() {
         if sub == "supervise" {
             std::process::exit(daemon::supervise().await);
         }
-        if sub == "update" || sub == "module" {
+        if sub == "update" || sub == "module" || sub == "plugin" {
             std::process::exit(update::run(&args).await);
         }
         // Commandes héritées NON portées : refuser EXPLICITEMENT au lieu de

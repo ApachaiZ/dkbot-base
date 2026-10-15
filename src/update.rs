@@ -264,11 +264,93 @@ async fn switch_to(flavor: &Flavor, tag: Option<&str>) -> Result<String, String>
 }
 
 /// Point d'entrée CLI. `0` = succès, `1` = échec.
+/// Registre des PLUGINS installables : (id, dépôt GitHub).
+/// Chaque plugin est un `.so` publié dans SES releases, avec un
+/// `SHA256SUMS` compagnon — `dkbot plugin install <id>` vérifie la somme.
+const PLUGINS: &[(&str, &str)] = &[
+    ("dragonwilds", "ApachaiZ/dkbot-dragonwilds"),
+    ("saves", "ApachaiZ/dkbots-saves"),
+];
+
+#[derive(serde::Deserialize)]
+struct PluginRelease {
+    assets: Vec<PluginAsset>,
+}
+
+#[derive(serde::Deserialize)]
+struct PluginAsset {
+    name: String,
+    browser_download_url: String,
+}
+
+async fn plugin(args: &[String]) -> Result<String, String> {
+    match args.first().map(String::as_str) {
+        Some("install") => {
+            let id = args.get(1).cloned().ok_or("usage : dkbot plugin install <id>")?;
+            let Some((_, repo)) = PLUGINS.iter().find(|(rid, _)| rid == &id) else {
+                return Err(format!("plugin inconnu : {id} (connus : {})",
+                    PLUGINS.iter().map(|(r, _)| *r).collect::<Vec<_>>().join(", ")));
+            };
+            let url = format!("https://api.github.com/repos/{repo}/releases/latest");
+            let release: PluginRelease = get_json(&url).await?;
+            let so_name = format!("{id}.so");
+            let Some(so) = release.assets.iter().find(|a| a.name == so_name) else {
+                return Err(format!("release sans asset {so_name}"));
+            };
+            let Some(sums) = release.assets.iter().find(|a| a.name == "SHA256SUMS") else {
+                return Err("release sans SHA256SUMS".to_string());
+            };
+            let so_bytes = download(&so.browser_download_url, &std::path::PathBuf::from(format!("/tmp/dkbot-plugin-{id}.so"))).await?;
+            let sums_bytes = download(&sums.browser_download_url, &std::path::PathBuf::from(format!("/tmp/dkbot-plugin-{id}.sums"))).await?;
+            let expected = String::from_utf8_lossy(&sums_bytes).to_string();
+            let actual = sha256_hex(&so_bytes);
+            let expected_hex = expected.split_whitespace().next().unwrap_or("");
+            if expected_hex.is_empty() || !actual.eq_ignore_ascii_case(expected_hex) {
+                return Err(format!("somme SHA-256 divergente ({actual} != {expected_hex}) — abandon"));
+            }
+            let dir = crate::paths::plugins_dir();
+            std::fs::create_dir_all(&dir).map_err(|e| format!("création de plugins/ : {e}"))?;
+            let dest = dir.join(&so_name);
+            std::fs::write(&dest, &so_bytes).map_err(|e| format!("écriture : {e}"))?;
+            Ok(format!("plugin {id} installé dans {} (SHA-256 vérifiée)", dest.display()))
+        }
+        Some("list") => {
+            let dir = crate::paths::plugins_dir();
+            let mut found = Vec::new();
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().map(|e| e == "so").unwrap_or(false) {
+                        found.push(entry.file_name().to_string_lossy().into_owned());
+                    }
+                }
+            }
+            if found.is_empty() {
+                Ok("aucun plugin installé (dossier plugins/ vide)".into())
+            } else {
+                Ok(format!("plugins installés : {}", found.join(", ")))
+            }
+        }
+        Some("remove") => {
+            let id = args.get(1).cloned().ok_or("usage : dkbot plugin remove <id>")?;
+            let dest = crate::paths::plugins_dir().join(format!("{id}.so"));
+            match std::fs::remove_file(&dest) {
+                Ok(()) => Ok(format!("plugin {id} retiré")),
+                Err(e) => Err(format!("retrait impossible : {e}")),
+            }
+        }
+        _ => Err("usage : dkbot plugin install <id> | list | remove <id>".into()),
+    }
+}
+
 pub async fn run(args: &[String]) -> i32 {
-    let outcome = if args.get(1).map(|s| s.as_str()) == Some("module") {
-        module(args).await
-    } else {
-        update(args).await
+    let outcome = match args.get(1).map(|s| s.as_str()) {
+        Some("module") => module(args).await,
+        Some("plugin") => {
+            let rest: Vec<String> = args.iter().skip(2).cloned().collect();
+            plugin(&rest).await
+        }
+        _ => update(args).await,
     };
     match outcome {
         Ok(msg) => {

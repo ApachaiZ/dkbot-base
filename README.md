@@ -272,6 +272,39 @@ préfixe configuré). Si le bot ne tourne pas en root :
 
 ---
 
+## 🔌 Plugins dynamiques (architecture modulaire)
+
+Le cœur charge des **plugins** depuis `plugins/` (`.so`/`.dylib`/`.dll`) au
+démarrage — sans recompilation :
+
+```text
+dkbot (dkbot-base)                 plugins/*.so (dépôts dédiés)
+┌──────────────────────┐           ┌───────────────────────────────┐
+│ plugin host (ABI v1) │◄── ABI ──►│ dragonwilds (dkbot-dragonwilds) │
+│ /plugin (owner)      │   repr(C) │ saves      (dkbots-saves)      │
+└──────────────────────┘  versionné└───────────────────────────────┘
+```
+
+- **Contrat** : le crate `dkbot-host-api` (dans ce dépôt, `crates/`) définit
+  la vtable `repr(C)`, `ABI_VERSION` et les règles (rien que des octets à
+  travers la frontière — les commandes échangent du JSON ; tampons bornés ;
+  version incompatible = plugin refusé au chargement, jamais appelé).
+- **Installation** :
+  ```bash
+  dkbot plugin install dragonwilds   # télécharge le .so + vérifie SHA-256
+  dkbot plugin install saves
+  dkbot plugin list | remove <id>
+  ```
+- **Exécution** : chaque plugin expose ses commandes JSON ; l'hôte les
+  exécute via `/plugin <plugin> <commande> [args]` (owner), en transmettant
+  le contexte appelant `{caller:{id,is_owner,roles}}` — les plugins font
+  leur propre autorisation.
+- **Écrire un plugin** : un crate `cdylib` qui dépend de `dkbot-host-api`,
+  définit sa vtable statique et appelle `export_plugin!(&VTABLE)` (voir
+  `plugins/dummy-plugin/` et les dépôts `dkbot-dragonwilds`/`dkbots-saves`).
+- **Politique ABI** : bump majeur d'`ABI_VERSION` = plugins à recompiler
+  (refus propre) ; ajouts compatibles (nouvelle commande) = pas de bump.
+
 ## 🧩 Modules
 
 Les fonctionnalités optionnelles sont des MODULES : activables et

@@ -256,6 +256,14 @@ mod tests {
             host.run("dummy-plugin", "ping", "{}").unwrap(),
             "{\"plugin\":\"dummy-plugin\",\"reply\":\"pong\"}"
         );
+        if loaded.contains(&"saves".to_string()) {
+            let cmds = host.list_commands("saves").unwrap();
+            assert!(cmds.contains(&"backup".to_string()), "commandes : {cmds:?}");
+            let out = host
+                .run("saves", "list", "{\"caller\":{\"is_owner\":true},\"args\":{}}")
+                .unwrap();
+            assert!(out.contains("error") || out.contains("backups"), "réponse : {out}");
+        }
         if loaded.contains(&"dragonwilds".to_string()) {
             let cmds = host.list_commands("dragonwilds").unwrap();
             assert!(cmds.contains(&"tp".to_string()), "commandes : {cmds:?}");
