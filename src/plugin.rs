@@ -191,6 +191,10 @@ pub struct ManifestArg {
     pub kind: String,
     #[serde(default)]
     pub required: bool,
+    /// Valeurs proposées en menu (ex. ["on", "off"]) — Discord affiche un
+    /// sélecteur au lieu d'un champ libre.
+    #[serde(default)]
+    pub choices: Vec<String>,
 }
 
 /// Une commande déclarée par un plugin.

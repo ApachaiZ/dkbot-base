@@ -99,7 +99,12 @@ fn option_from_manifest(arg: &ManifestArg) -> serenity::CreateCommandOption {
         // reste faite par le plugin (message d'erreur propre).
         option.set_autocomplete(true)
     } else {
-        option.required(arg.required)
+        let mut option = option.required(arg.required);
+        // Menu fixe (ex. on/off) : le client Discord affiche un sélecteur.
+        for choice in &arg.choices {
+            option = option.add_string_choice(choice.clone(), choice.clone());
+        }
+        option
     }
 }
 
@@ -481,12 +486,33 @@ mod tests {
     }
 
     #[test]
+    fn choices_become_a_select_menu() {
+        let arg = ManifestArg {
+            name: "state".into(),
+            description: String::new(),
+            kind: "string".into(),
+            required: false,
+            choices: vec!["on".into(), "off".into()],
+        };
+        let option = option_from_manifest(&arg);
+        let built = serenity::CreateCommand::new("g").add_option(option);
+        let json = serde_json::to_value(&built).expect("sérialisable");
+        let opt = &json["options"][0];
+        assert_eq!(opt["autocomplete"], false);
+        let choices = opt["choices"].as_array().expect("menu");
+        assert_eq!(choices.len(), 2);
+        assert_eq!(choices[0]["name"], "on");
+        assert_eq!(choices[1]["value"], "off");
+    }
+
+    #[test]
     fn option_kinds_map_to_discord_types() {
         let arg = ManifestArg {
             name: "n".into(),
             description: String::new(),
             kind: "int".into(),
             required: true,
+            choices: vec![],
         };
         let option = option_from_manifest(&arg);
         let built = serenity::CreateCommand::new("g").add_option(option);
@@ -501,6 +527,7 @@ mod tests {
                 description: String::new(),
                 kind: kind.into(),
                 required: true, // forcé à false par Discord (required + autocomplete interdit)
+                choices: vec![],
             };
             let option = option_from_manifest(&arg);
             let built = serenity::CreateCommand::new("g").add_option(option);
@@ -516,6 +543,7 @@ mod tests {
             description: String::new(),
             kind: "string".into(),
             required: true,
+            choices: vec![],
         };
         let option = option_from_manifest(&arg);
         let built = serenity::CreateCommand::new("g").add_option(option);
