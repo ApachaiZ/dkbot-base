@@ -779,14 +779,9 @@ pub async fn plugin_command(
     #[description = "Commande (optionnel)"] commande: Option<String>,
     #[description = "Arguments JSON (optionnel)"] args: Option<String>,
 ) -> Result<(), Error> {
-    if !ctx.data().state.is_owner(&ctx.author().id.to_string()) {
-        ctx.send(reply(card(
-            "🔌 Plugins",
-            "Réservé au propriétaire.",
-            Tone::Bad,
-            None,
-        )))
-        .await?;
+    // L'autorisation fine appartient aux plugins (contexte appelant) ;
+    // /plugin est ouvert aux opérateurs du bot.
+    if !ensure_operator(&ctx).await? {
         return Ok(());
     }
     let host = &ctx.data().plugins;
