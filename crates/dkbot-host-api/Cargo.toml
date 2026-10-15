@@ -1,0 +1,9 @@
+[package]
+name = "dkbot-host-api"
+version = "0.1.0"
+edition = "2021"
+description = "Contrat ABI stable entre dkbot (hôte) et ses plugins dynamiques"
+license = "MIT"
+
+[lib]
+name = "dkbot_host_api"

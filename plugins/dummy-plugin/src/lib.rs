@@ -2,16 +2,7 @@
 
 use std::ffi::c_char;
 
-// Copie locale de la vtable ABI v1 (Phase 1 la déplacera dans un crate
-// partagé `dkbot-host-api`).
-#[repr(C)]
-pub struct PluginVtable {
-    pub abi_version: u32,
-    pub name: unsafe extern "C" fn() -> *const c_char,
-    pub list: unsafe extern "C" fn() -> *const c_char,
-    pub run: unsafe extern "C" fn(cmd: *const c_char, args_json: *const c_char, out: *mut u8, out_cap: usize) -> i32,
-    pub shutdown: unsafe extern "C" fn(),
-}
+use dkbot_host_api::{PluginVtable, export_plugin};
 
 static NAME: &[u8] = b"dummy-plugin\0";
 static CMDS: &[u8] = b"[\"ping\"]\0";
@@ -45,15 +36,12 @@ unsafe extern "C" fn plugin_run(
 unsafe extern "C" fn plugin_shutdown() {}
 
 static VTABLE: PluginVtable = PluginVtable {
-    abi_version: 1,
+    abi_version: dkbot_host_api::ABI_VERSION,
     name: plugin_name,
     list: plugin_list,
     run: plugin_run,
     shutdown: plugin_shutdown,
 };
 
-/// Point d'entrée du plugin — symbole recherché par l'hôte.
-#[no_mangle]
-pub unsafe extern "C" fn dkbot_plugin_vtable() -> *const PluginVtable {
-    &VTABLE
-}
+// Point d'entrée — symbole recherché par l'hôte (ABI v1).
+export_plugin!(&VTABLE);

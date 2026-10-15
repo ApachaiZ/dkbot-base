@@ -9,3 +9,4 @@ license = "MIT"
 crate-type = ["cdylib"]
 
 [dependencies]
+dkbot-host-api = { path = "../../crates/dkbot-host-api" }

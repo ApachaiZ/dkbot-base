@@ -5,38 +5,10 @@
 //! table de fonctions `repr(C)` : seuls des pointeurs, des entiers et des
 //! octets traversent la frontière (JSON en entrée/sortie des commandes).
 
-use std::ffi::{c_char, CStr};
 use std::path::Path;
 use std::sync::Mutex;
 
-/// Version de l'ABI hôte. Tout plugin dont la version diffère est REFUSÉ
-/// au chargement (jamais appelé) — pas de crash, un log explicite.
-pub const ABI_VERSION: u32 = 1;
-
-/// Taille maximale du tampon de réponse fourni à un plugin.
-pub const MAX_OUT: usize = 4096;
-
-/// Exécute une commande du plugin : `cmd` + `args_json` (JSON brut) en
-/// entrée, réponse JSON écrite dans `out` (borné par `out_cap`).
-/// Retour : nombre d'octets écrits, 0 = réponse vide, négatif = erreur.
-pub type PluginRunFn = unsafe extern "C" fn(
-    cmd: *const c_char,
-    args_json: *const c_char,
-    out: *mut u8,
-    out_cap: usize,
-) -> i32;
-
-#[repr(C)]
-pub struct PluginVtable {
-    pub abi_version: u32,
-    pub name: unsafe extern "C" fn() -> *const c_char,
-    /// Liste des commandes exposées, en JSON (`["ping","…"]`).
-    pub list: unsafe extern "C" fn() -> *const c_char,
-    pub run: PluginRunFn,
-    pub shutdown: unsafe extern "C" fn(),
-}
-
-pub type PluginVtableFn = unsafe extern "C" fn() -> *const PluginVtable;
+pub use dkbot_host_api::{ABI_VERSION, MAX_OUT, PluginVtable, PluginVtableFn, ENTRY_SYMBOL};
 
 pub struct Plugin {
     pub name: String,
@@ -105,7 +77,7 @@ impl PluginHost {
         // SAFETY : le symbole est fourni par le plugin ; le type est vérifié
         // par la version d'ABI immédiatement après.
         let vtable_fn: libloading::Symbol<PluginVtableFn> = unsafe {
-            lib.get(b"dkbot_plugin_vtable\0")
+            lib.get(ENTRY_SYMBOL)
         }
         .map_err(|e| format!("symbole dkbot_plugin_vtable absent : {e}"))?;
         let get_vtable: PluginVtableFn = *vtable_fn;
@@ -121,10 +93,7 @@ impl PluginHost {
             ));
         }
         // SAFETY : name() retourne une chaîne statique terminée par NUL.
-        let name = unsafe {
-            let ptr = ((*vtable_ref).name)();
-            CStr::from_ptr(ptr).to_string_lossy().into_owned()
-        };
+        let name = unsafe { dkbot_host_api::read_cstr(((*vtable_ref).name)()) };
         if name.is_empty() {
             return Err("nom de plugin vide".into());
         }
@@ -159,10 +128,7 @@ impl PluginHost {
             return Err(format!("plugin inconnu : {plugin}"));
         };
         // SAFETY : list() retourne une chaîne statique JSON du plugin.
-        let raw = unsafe {
-            let ptr = ((*found.vtable).list)();
-            CStr::from_ptr(ptr).to_string_lossy().into_owned()
-        };
+        let raw = unsafe { dkbot_host_api::read_cstr(((*found.vtable).list)()) };
         let parsed: Vec<String> =
             serde_json::from_str(&raw).map_err(|e| format!("liste illisible : {e}"))?;
         Ok(parsed)
@@ -215,7 +181,7 @@ impl Drop for PluginHost {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::c_char;
+    use std::ffi::{c_char, CStr};
 
     static NAME: &[u8] = b"test-plugin\0";
     static LIST: &[u8] = b"[\"echo\"]\0";
