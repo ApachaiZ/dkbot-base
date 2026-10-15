@@ -1,0 +1,246 @@
+//! Enregistrement des slash commands (MULTI-GUILDE, hash + purge).
+//!
+//! Politique :
+//! - enregistrement dans CHAQUE guilde configurée (DISCORD_GUILD_IDS),
+//!   une requête PUT groupée par guilde ;
+//! - un hash (guildes + application + commandes) persisté dans
+//!   `.config.d/commands.hash` évite tout ré-enregistrement inutile ;
+//! - les commandes GLOBALES résiduelles sont purgées à CHAQUE démarrage
+//!   (répare les doublons d'une version antérieure), best-effort ;
+//! - une guilde retirée de la config voit ses commandes purgées ;
+//! - les erreurs Discord 50001 (Missing Access) et 10002 (Unknown
+//!   Application) sont traduites en messages actionnables avec exit 78.
+
+use poise::serenity_prelude as serenity;
+use serde_json::Value;
+use sha2::{Digest, Sha256};
+
+use crate::commands::{Data, Error};
+use crate::config::Config;
+use crate::errors::ExitError;
+use crate::fsutil;
+use crate::i18n::{fill, Catalog};
+use crate::logger;
+use crate::paths;
+
+/// Empreinte SHA-256 (hex) de {guildes, application, commandes}.
+pub fn commands_hash(cfg: &Config, commands_json: &[Value]) -> String {
+    let payload = serde_json::json!({
+        "guilds": cfg.guild_ids,
+        "app": cfg.client_id,
+        "cmds": commands_json,
+    });
+    format!("{:x}", Sha256::digest(payload.to_string().as_bytes()))
+}
+
+#[derive(serde::Deserialize)]
+struct DeployState {
+    guild: Option<String>,
+    guilds: Option<Vec<String>>,
+    hash: String,
+}
+
+/// État persisté du déploiement : JSON `{guilds, hash}` (ou `{guild, hash}`
+/// hérité), ou hex seul hérité.
+pub fn read_deploy_state(default_guild: &str) -> Option<(Vec<String>, String)> {
+    let raw = std::fs::read_to_string(paths::commands_hash_file()).ok()?;
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    if raw.starts_with('{') {
+        let parsed: DeployState = serde_json::from_str(raw).ok()?;
+        let guilds = parsed
+            .guilds
+            .or_else(|| parsed.guild.map(|g| vec![g]))
+            .unwrap_or_else(|| vec![default_guild.to_string()]);
+        return Some((guilds, parsed.hash));
+    }
+    if raw.len() == 64 && raw.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Some((vec![default_guild.to_string()], raw.to_string()));
+    }
+    None
+}
+
+pub fn write_deploy_state(guilds: &[String], hash: &str) {
+    if let Err(e) = fsutil::secure_write(
+        &paths::commands_hash_file(),
+        serde_json::json!({ "guilds": guilds, "hash": hash })
+            .to_string()
+            .as_bytes(),
+    ) {
+        logger::error(format!("Could not persist commands hash: {e}"));
+    }
+}
+
+/// Code d'erreur Discord (`50001`, `10002`…) d'une erreur HTTP.
+fn discord_error_code(err: &serenity::Error) -> Option<u64> {
+    match err {
+        serenity::Error::Http(serenity::http::HttpError::UnsuccessfulRequest(response)) => {
+            Some(response.error.code as u64)
+        }
+        _ => None,
+    }
+}
+
+/// Construit la liste complète des commandes (cœur + groupes plugins) et
+/// l'empreinte de déploiement correspondante.
+fn build_payload(
+    cfg: &Config,
+    commands: &[poise::Command<Data, Error>],
+    plugins: &crate::plugin::PluginHost,
+) -> (Vec<serenity::CreateCommand>, Vec<Value>, String) {
+    let mut built = poise::builtins::create_application_commands(commands);
+    let plugin_groups = crate::plugin_commands::build_groups(plugins);
+    let plugins_json: Vec<Value> = plugin_groups
+        .iter()
+        .map(|c| serde_json::to_value(c).unwrap_or(Value::Null))
+        .collect();
+    built.extend(plugin_groups);
+    let commands_json: Vec<Value> = built
+        .iter()
+        .map(|c| serde_json::to_value(c).unwrap_or(Value::Null))
+        .collect();
+    let mut hash_payload = commands_json.clone();
+    hash_payload.extend(plugins_json.clone());
+    let hash = commands_hash(cfg, &hash_payload);
+    (built, plugins_json, hash)
+}
+
+/// Résumé compact des groupes enregistrés (ex. « groupes plugins : dw (19), saves (3) »).
+fn groups_summary(plugins_json: &[Value]) -> Option<String> {
+    let summary: Vec<String> = plugins_json
+        .iter()
+        .filter_map(|c| {
+            let name = c.get("name")?.as_str()?;
+            let n = c.get("options")?.as_array()?.len();
+            Some(format!("{name} ({n})"))
+        })
+        .collect();
+    if summary.is_empty() {
+        None
+    } else {
+        Some(summary.join(", "))
+    }
+}
+
+/// Re-synchronise les slash commands de la guilde si les manifestes des
+/// plugins ont changé (ex. switch cheat basculé : les commandes apparaissent
+/// ou disparaissent sans redémarrage). Appelé après chaque interaction de
+/// plugin. Renvoie `true` si un ré-enregistrement a eu lieu.
+pub async fn sync_if_changed(
+    ctx: &serenity::Context,
+    commands: &[poise::Command<Data, Error>],
+    data: &Data,
+) -> Result<bool, Error> {
+    let (built, _, hash) = build_payload(&data.cfg, commands, &data.plugins);
+    let previous = read_deploy_state(&data.cfg.guild_id);
+    if previous.as_ref().map(|(_, h)| h == &hash).unwrap_or(false) {
+        return Ok(false);
+    }
+    for guild in &data.cfg.guild_ids {
+        let guild_id: serenity::GuildId = guild
+            .parse::<u64>()
+            .map_err(|_| ExitError::config(format!("DISCORD_GUILD_IDS : guilde invalide {guild}")))?
+            .into();
+        guild_id.set_commands(&ctx.http, built.clone()).await?;
+    }
+    write_deploy_state(&data.cfg.guild_ids, &hash);
+    logger::info(data.catalog.audit.commands_registered);
+    Ok(true)
+}
+
+/// Enregistre les commandes si nécessaire (avant la connexion gateway).
+pub async fn deploy_commands_if_needed(
+    http: &serenity::Http,
+    cfg: &Config,
+    catalog: &Catalog,
+    commands: &[poise::Command<Data, Error>],
+    plugins: &crate::plugin::PluginHost,
+) -> Result<(), Error> {
+    let (built, plugins_json, hash) = build_payload(cfg, commands, plugins);
+    if let Some(summary) = groups_summary(&plugins_json) {
+        logger::info(format!("groupes plugins : {summary}"));
+    }
+
+    // ── Purge des commandes GLOBALES (à chaque démarrage) ──
+    match http
+        .create_global_commands(&Vec::<serenity::CreateCommand>::new())
+        .await
+    {
+        Ok(_) => logger::info(catalog.audit.commands_global_purged),
+        Err(e) => logger::warn(fill(
+            catalog.audit.commands_global_purge_failed,
+            &[("error", &e.to_string())],
+        )),
+    }
+
+    // ── Skip si rien n'a changé ──
+    let previous = read_deploy_state(&cfg.guild_id);
+    if previous.as_ref().map(|(_, h)| h == &hash).unwrap_or(false) {
+        logger::info(catalog.audit.commands_skipped);
+        return Ok(());
+    }
+
+    // ── Guildes retirées de la config : purge de leurs commandes ──
+    if let Some((old_guilds, _)) = &previous {
+        for old_guild in old_guilds {
+            if cfg.guild_ids.contains(old_guild) {
+                continue;
+            }
+            if let Ok(old_id) = old_guild.parse::<u64>() {
+                let purge = serenity::GuildId::new(old_id)
+                    .set_commands(http, Vec::<serenity::CreateCommand>::new())
+                    .await;
+                match purge {
+                    Ok(_) => logger::info(fill(
+                        catalog.audit.commands_old_guild_purged,
+                        &[("guild", old_guild.as_str())],
+                    )),
+                    Err(e) => logger::warn(fill(
+                        catalog.audit.commands_old_guild_purge_failed,
+                        &[("guild", old_guild), ("error", &e.to_string())],
+                    )),
+                }
+            }
+        }
+    }
+
+    // ── Enregistrement groupé dans CHAQUE guilde configurée ──
+    for guild in &cfg.guild_ids {
+        let guild_id = match guild.parse::<u64>() {
+            Ok(id) => serenity::GuildId::new(id),
+            Err(e) => {
+                return Err(ExitError::config(format!(
+                    "DISCORD_GUILD_IDS : guilde invalide {guild} ({e})"
+                ))
+                .into());
+            }
+        };
+        if let Err(e) = guild_id.set_commands(http, built.clone()).await {
+            match discord_error_code(&e) {
+                Some(50001) => {
+                    return Err(ExitError::config(fill(
+                        catalog.errors.deploy_missing_access,
+                        &[
+                            ("guild", guild.as_str()),
+                            ("client", cfg.client_id.as_str()),
+                        ],
+                    ))
+                    .into());
+                }
+                Some(10002) => {
+                    return Err(ExitError::config(fill(
+                        catalog.errors.deploy_unknown_application,
+                        &[("client", cfg.client_id.as_str())],
+                    ))
+                    .into());
+                }
+                _ => return Err(e.into()),
+            }
+        }
+    }
+    write_deploy_state(&cfg.guild_ids, &hash);
+    logger::info(catalog.audit.commands_registered);
+    Ok(())
+}
