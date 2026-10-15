@@ -779,6 +779,10 @@ pub async fn plugin_command(
     #[description = "Commande (optionnel)"] commande: Option<String>,
     #[description = "Arguments JSON (optionnel)"] args: Option<String>,
 ) -> Result<(), Error> {
+    // Défer IMMÉDIAT : l'exécution d'un plugin peut prendre plusieurs
+    // secondes (HTTP vers le mod) — sans defer, Discord coupe à 3 s et
+    // l'utilisateur re-clique (double exécution des actions !).
+    ctx.defer_ephemeral().await?;
     // L'autorisation fine appartient aux plugins (contexte appelant) ;
     // /plugin est ouvert aux opérateurs du bot.
     if !ensure_operator(&ctx).await? {
@@ -836,15 +840,34 @@ pub async fn plugin_command(
     let parsed: serde_json::Value = serde_json::from_str(&args).unwrap_or(serde_json::json!({}));
     let wrapped = serde_json::json!({ "caller": caller, "args": parsed });
     args = wrapped.to_string();
-    match host.run(&nom, &commande, &args) {
-        Ok(result) => {
+    // L'appel du plugin est BLOQUANT (client HTTP synchrone côté plugin) :
+    // on le sort du runtime async pour ne pas geler la gateway Discord.
+    let host = ctx.data().plugins.clone();
+    let nom_run = nom.clone();
+    let commande_run = commande.clone();
+    let args_run = args.clone();
+    let outcome = tokio::task::spawn_blocking(move || {
+        host.run(&nom_run, &commande_run, &args_run)
+    })
+    .await;
+    match outcome {
+        Ok(Ok(result)) => {
             let body = format!("**{nom}** `{commande}` →\n```json\n{result}\n```");
             ctx.send(reply(card("🔌 Plugins", &body, Tone::Good, None)))
                 .await?;
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             ctx.send(reply(card("🔌 Plugins", &e, Tone::Bad, None)))
                 .await?;
+        }
+        Err(join) => {
+            ctx.send(reply(card(
+                "🔌 Plugins",
+                &format!("tâche interrompue : {join}"),
+                Tone::Bad,
+                None,
+            )))
+            .await?;
         }
     }
     Ok(())
