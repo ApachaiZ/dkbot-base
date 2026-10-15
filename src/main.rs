@@ -37,6 +37,7 @@ mod modules;
 mod notify;
 mod paths;
 mod plugin;
+mod plugin_commands;
 mod power;
 mod schedule;
 mod setup;
@@ -280,10 +281,11 @@ async fn main() {
     if !loaded.is_empty() {
         logger::info(format!("plugins chargés : {}", loaded.join(", ")));
     }
+    let state = Arc::new(state);
     let data = Data {
         cfg,
         api,
-        state: Arc::new(state),
+        state,
         catalog,
         plugins,
     };
@@ -294,7 +296,14 @@ async fn main() {
         client_id.parse().unwrap_or_default(),
     ));
     if let Err(e) =
-        deploy::deploy_commands_if_needed(&http, &data.cfg, catalog, &commands::commands()).await
+        deploy::deploy_commands_if_needed(
+            &http,
+            &data.cfg,
+            catalog,
+            &commands::commands(),
+            &data.plugins,
+        )
+        .await
     {
         let code = find_exit_code(&*e).unwrap_or(1);
         logger::error(format!("Startup failed: {e}"));
@@ -310,6 +319,17 @@ async fn main() {
         event_handler: |ctx, event, framework, data| {
             Box::pin(async move {
                 commands::on_ready(ctx, event, framework, data).await;
+                // Interactions des groupes de plugins (/dw …) : consommées
+                // ici, après l'échec silencieux de poise (commande inconnue).
+                if let serenity::FullEvent::InteractionCreate { interaction } = event {
+                    crate::plugin_commands::handle_plugin_interaction(
+                        ctx,
+                        interaction,
+                        &data.plugins,
+                        &data.state,
+                    )
+                    .await;
+                }
                 Ok(())
             })
         },

@@ -507,7 +507,7 @@ pub async fn botlogs(
         .await?;
         return Ok(());
     }
-    let body = format!("```\n{}\n```", tail.join("\n"));
+    let body = cap_embed(&format!("```\n{}\n```", tail.join("\n")), 3900);
     ctx.send(reply(card(catalog.bot_logs.title, &body, Tone::Good, None)))
         .await?;
     Ok(())
@@ -771,13 +771,66 @@ pub async fn help(ctx: Context<'_>) -> Result<(), Error> {
 
 // ── Liste des commandes (ordre d'enregistrement Discord) ───────────────────
 
+/// Parse « k=v k=v » (ou JSON brut) en objet JSON d'arguments.
+fn parse_args(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.starts_with('{') {
+        return trimmed.to_string();
+    }
+    let mut map = serde_json::Map::new();
+    for token in trimmed.split_whitespace() {
+        let Some((key, value)) = token.split_once('=') else { continue };
+        let value = value.trim();
+        let parsed: serde_json::Value = if let Ok(b) = value.parse::<bool>() {
+            serde_json::json!(b)
+        } else if let Ok(n) = value.parse::<f64>() {
+            serde_json::json!(n)
+        } else {
+            serde_json::json!(value)
+        };
+        map.insert(key.to_string(), parsed);
+    }
+    serde_json::Value::Object(map).to_string()
+}
+
+/// Tronque un corps long : les embeds Discord sont limités à 4096 caractères.
+pub(crate) fn cap_embed(body: &str, max: usize) -> String {
+    if body.chars().count() <= max {
+        return body.to_string();
+    }
+    let mut out: String = body.chars().take(max - 40).collect();
+    out.push_str("\n\n… (réponse tronquée, utilisez un filtre)");
+    out
+}
+
+/// Construit le JSON d'appel : contexte appelant + arguments parsés.
+async fn plugin_call_args(ctx: &Context<'_>, raw_args: &str) -> String {
+    let mut caller = serde_json::json!({
+        "id": ctx.author().id.to_string(),
+        "is_owner": ctx.data().state.is_owner(&ctx.author().id.to_string()),
+        "roles": [],
+    });
+    if let Some(guild) = ctx.guild_id() {
+        if let Ok(member) = ctx
+            .serenity_context()
+            .http
+            .get_member(guild, ctx.author().id)
+            .await
+        {
+            let roles: Vec<String> = member.roles.iter().map(|r| r.get().to_string()).collect();
+            caller["roles"] = serde_json::json!(roles);
+        }
+    }
+    serde_json::json!({ "caller": caller, "args": serde_json::from_str::<serde_json::Value>(&parse_args(raw_args)).unwrap_or(serde_json::json!({})) }).to_string()
+}
+
 /// 🔌 Plugins dynamiques (ABI versionné) — owner.
 #[poise::command(slash_command, ephemeral)]
 pub async fn plugin_command(
     ctx: Context<'_>,
     #[description = "Nom du plugin (optionnel)"] nom: Option<String>,
     #[description = "Commande (optionnel)"] commande: Option<String>,
-    #[description = "Arguments JSON (optionnel)"] args: Option<String>,
+    #[description = "Arguments cle=valeur ou JSON (optionnel)"] args: Option<String>,
 ) -> Result<(), Error> {
     // Défer IMMÉDIAT : l'exécution d'un plugin peut prendre plusieurs
     // secondes (HTTP vers le mod) — sans defer, Discord coupe à 3 s et
@@ -818,28 +871,7 @@ pub async fn plugin_command(
         }
         return Ok(());
     };
-    let mut args = args.unwrap_or_else(|| "{}".to_string());
-    // Contexte appelant : les plugins l'utilisent pour l'autorisation
-    // (propriétaire, rôles) — transmis en JSON, l'ABI reste inchangée.
-    let mut caller = serde_json::json!({
-        "id": ctx.author().id.to_string(),
-        "is_owner": ctx.data().state.is_owner(&ctx.author().id.to_string()),
-        "roles": [],
-    });
-    if let Some(guild) = ctx.guild_id() {
-        if let Ok(member) = ctx
-            .serenity_context()
-            .http
-            .get_member(guild, ctx.author().id)
-            .await
-        {
-            let roles: Vec<String> = member.roles.iter().map(|r| r.get().to_string()).collect();
-            caller["roles"] = serde_json::json!(roles);
-        }
-    }
-    let parsed: serde_json::Value = serde_json::from_str(&args).unwrap_or(serde_json::json!({}));
-    let wrapped = serde_json::json!({ "caller": caller, "args": parsed });
-    args = wrapped.to_string();
+    let args = plugin_call_args(&ctx, &args.unwrap_or_else(|| "{}".to_string())).await;
     // L'appel du plugin est BLOQUANT (client HTTP synchrone côté plugin) :
     // on le sort du runtime async pour ne pas geler la gateway Discord.
     let host = ctx.data().plugins.clone();
@@ -852,7 +884,10 @@ pub async fn plugin_command(
     .await;
     match outcome {
         Ok(Ok(result)) => {
-            let body = format!("**{nom}** `{commande}` →\n```json\n{result}\n```");
+            let body = cap_embed(
+                &format!("**{nom}** `{commande}` →\n```json\n{result}\n```"),
+                3900,
+            );
             ctx.send(reply(card("🔌 Plugins", &body, Tone::Good, None)))
                 .await?;
         }

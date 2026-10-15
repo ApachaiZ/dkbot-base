@@ -89,8 +89,16 @@ pub async fn deploy_commands_if_needed(
     cfg: &Config,
     catalog: &Catalog,
     commands: &[poise::Command<Data, Error>],
+    plugins: &crate::plugin::PluginHost,
 ) -> Result<(), Error> {
-    let built = poise::builtins::create_application_commands(commands);
+    let mut built = poise::builtins::create_application_commands(commands);
+    // Groupes dynamiques des plugins (manifestes → vraies slash commands).
+    let plugin_groups = crate::plugin_commands::build_groups(plugins);
+    let plugins_json: Vec<Value> = plugin_groups
+        .iter()
+        .map(|c| serde_json::to_value(c).unwrap_or(Value::Null))
+        .collect();
+    built.extend(plugin_groups);
     let commands_json: Vec<Value> = built
         .iter()
         .map(|c| serde_json::to_value(c).unwrap_or(Value::Null))
@@ -109,7 +117,9 @@ pub async fn deploy_commands_if_needed(
     }
 
     // ── Skip si rien n'a changé ──
-    let hash = commands_hash(cfg, &commands_json);
+    let mut hash_payload = commands_json.clone();
+    hash_payload.extend(plugins_json);
+    let hash = commands_hash(cfg, &hash_payload);
     let previous = read_deploy_state(&cfg.guild_id);
     if previous.as_ref().map(|(_, h)| h == &hash).unwrap_or(false) {
         logger::info(catalog.audit.commands_skipped);

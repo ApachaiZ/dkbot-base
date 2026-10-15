@@ -127,11 +127,14 @@ impl PluginHost {
         let Some(found) = plugins.iter().find(|p| p.name == plugin) else {
             return Err(format!("plugin inconnu : {plugin}"));
         };
-        // SAFETY : list() retourne une chaîne statique JSON du plugin.
+        // SAFETY : list() retourne une chaîne statique JSON du plugin
+        // (manifeste riche v1 ou ancienne liste de noms).
         let raw = unsafe { dkbot_host_api::read_cstr(((*found.vtable).list)()) };
-        let parsed: Vec<String> =
-            serde_json::from_str(&raw).map_err(|e| format!("liste illisible : {e}"))?;
-        Ok(parsed)
+        Ok(parse_manifest(&raw, plugin)
+            .commands
+            .into_iter()
+            .map(|c| c.name)
+            .collect())
     }
 
     pub fn run(
@@ -175,6 +178,122 @@ impl Drop for PluginHost {
             // tant que le .so est encore chargé.
             unsafe { ((*plugin.vtable).shutdown)() };
         }
+    }
+}
+
+/// Un argument de commande, tel que déclaré par le plugin.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct ManifestArg {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default = "default_kind")]
+    pub kind: String,
+    #[serde(default)]
+    pub required: bool,
+}
+
+/// Une commande déclarée par un plugin.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct ManifestCommand {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub args: Vec<ManifestArg>,
+}
+
+/// Le manifeste complet d'un plugin : le groupe Discord (/dw, /saves…), sa
+/// description et ses commandes. C'est ce qui permet à l'hôte d'enregistrer
+/// de VRAIES slash commands sans recompilation.
+#[derive(Debug, Clone, Default)]
+pub struct Manifest {
+    pub group: String,
+    pub description: String,
+    pub commands: Vec<ManifestCommand>,
+}
+
+fn default_kind() -> String {
+    "string".into()
+}
+
+/// Parse tolérant du manifeste JSON renvoyé par `list()` :
+/// - objet `{group,description,commands}` (forme riche) ;
+/// - tableau d'objets `{name,description,args}` (groupe = nom du plugin) ;
+/// - tableau de chaînes (hérité — commandes sans description).
+pub fn parse_manifest(raw: &str, plugin_name: &str) -> Manifest {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return Manifest {
+            group: plugin_name.to_string(),
+            description: String::new(),
+            commands: Vec::new(),
+        };
+    };
+    match value {
+        serde_json::Value::Object(_) => {
+            let group = value
+                .get("group")
+                .and_then(|g| g.as_str())
+                .unwrap_or(plugin_name)
+                .to_string();
+            let description = value
+                .get("description")
+                .and_then(|d| d.as_str())
+                .unwrap_or("")
+                .to_string();
+            let commands = value
+                .get("commands")
+                .and_then(|c| c.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|c| serde_json::from_value::<ManifestCommand>(c.clone()).ok())
+                        .collect()
+                })
+                .unwrap_or_default();
+            Manifest {
+                group,
+                description,
+                commands,
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            let commands = arr
+                .iter()
+                .filter_map(|entry| match entry {
+                    serde_json::Value::String(name) => Some(ManifestCommand {
+                        name: name.clone(),
+                        description: String::new(),
+                        args: Vec::new(),
+                    }),
+                    other => serde_json::from_value::<ManifestCommand>(other.clone()).ok(),
+                })
+                .collect();
+            Manifest {
+                group: plugin_name.to_string(),
+                description: String::new(),
+                commands,
+            }
+        }
+        _ => Manifest {
+            group: plugin_name.to_string(),
+            description: String::new(),
+            commands: Vec::new(),
+        },
+    }
+}
+
+impl PluginHost {
+    /// Manifestes de tous les plugins chargés : (nom du plugin, manifeste).
+    pub fn manifests(&self) -> Vec<(String, Manifest)> {
+        let plugins = self.plugins.lock().expect("plugin host lock");
+        plugins
+            .iter()
+            .map(|p| {
+                let raw = unsafe { dkbot_host_api::read_cstr(((*p.vtable).list)()) };
+                let manifest = parse_manifest(&raw, &p.name);
+                (p.name.clone(), manifest)
+            })
+            .collect()
     }
 }
 
@@ -265,13 +384,62 @@ mod tests {
             assert!(out.contains("error") || out.contains("backups"), "réponse : {out}");
         }
         if loaded.contains(&"dragonwilds".to_string()) {
-            let cmds = host.list_commands("dragonwilds").unwrap();
-            assert!(cmds.contains(&"tp".to_string()), "commandes : {cmds:?}");
+            let (_, manifest) = host
+                .manifests()
+                .into_iter()
+                .find(|(n, _)| n == "dragonwilds")
+                .expect("manifeste dragonwilds");
+            assert_eq!(manifest.group, "dw");
+            assert!(manifest.commands.iter().any(|c| c.name == "tp"));
+            assert!(manifest.commands.iter().any(|c| c.name == "cheats"));
+            // Le manifeste devient une vraie commande slash /dw dans Discord.
+            let groups = crate::plugin_commands::build_groups(&host);
+            let json = serde_json::to_value(&groups).expect("sérialisable");
+            let dw = json
+                .as_array()
+                .and_then(|arr| arr.iter().find(|g| g["name"] == "dw"))
+                .expect("commande /dw dans le JSON");
+            let options = dw["options"].as_array().expect("options du groupe dw");
+            assert_eq!(options.len(), 19, "19 sous-commandes : {json}");
+            assert!(options.iter().all(|o| o["type"] == 1), "SUB_COMMAND : {json}");
+            let noms: Vec<&str> = options.iter().map(|o| o["name"].as_str().unwrap()).collect();
+            assert!(noms.contains(&"tp") && noms.contains(&"cheats"), "{noms:?}");
+            // Les arguments typés arrivent aussi (ex. tp from/to en STRING).
+            let tp = options.iter().find(|o| o["name"] == "tp").unwrap();
+            let args = tp["options"].as_array().expect("arguments de tp");
+            assert!(args.iter().all(|a| a["type"] == 3), "STRING : {json}");
+            assert!(args.iter().any(|a| a["name"] == "from") && args.iter().any(|a| a["name"] == "to"));
             let out = host
                 .run("dragonwilds", "cheats", "{\"caller\":{\"is_owner\":true},\"args\":{}}")
                 .unwrap();
             assert!(out.contains("cheats_enabled"), "réponse : {out}");
         }
+    }
+
+    #[test]
+    fn parses_rich_manifest() {
+        let raw = r#"{"group":"dw","description":"Admin Dragonwilds","commands":[
+            {"name":"tp","description":"Téléporte","args":[{"name":"from","kind":"string","required":true}]}]}"#;
+        let m = parse_manifest(raw, "dragonwilds");
+        assert_eq!(m.group, "dw");
+        assert_eq!(m.commands.len(), 1);
+        assert_eq!(m.commands[0].args[0].name, "from");
+        assert!(m.commands[0].args[0].required);
+    }
+
+    #[test]
+    fn parses_legacy_string_array() {
+        let raw = r#"["ping","pong"]"#;
+        let m = parse_manifest(raw, "dummy");
+        assert_eq!(m.group, "dummy");
+        assert_eq!(m.commands.len(), 2);
+        assert_eq!(m.commands[0].name, "ping");
+    }
+
+    #[test]
+    fn parses_garbage_as_empty() {
+        let m = parse_manifest("pas du json", "x");
+        assert!(m.commands.is_empty());
     }
 
     #[test]
@@ -287,3 +455,4 @@ mod tests {
         assert!(host.run("test-plugin", "inconnue", "{}").is_err());
     }
 }
+

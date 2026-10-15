@@ -5,14 +5,23 @@ use std::ffi::c_char;
 use dkbot_host_api::{PluginVtable, export_plugin};
 
 static NAME: &[u8] = b"dummy-plugin\0";
-static CMDS: &[u8] = b"[\"ping\"]\0";
+static CMDS: &str = r#"{
+  "group": "dummy",
+  "description": "Plugin factice (démo)",
+  "commands": [
+    {"name":"ping","description":"Répond pong","args":[]}
+  ]
+}"#;
 
 unsafe extern "C" fn plugin_name() -> *const c_char {
     NAME.as_ptr() as *const c_char
 }
 
 unsafe extern "C" fn plugin_list() -> *const c_char {
-    CMDS.as_ptr() as *const c_char
+    use std::sync::OnceLock;
+    static C: OnceLock<std::ffi::CString> = OnceLock::new();
+    C.get_or_init(|| std::ffi::CString::new(CMDS).expect("manifeste valide"))
+        .as_ptr()
 }
 
 unsafe extern "C" fn plugin_run(
