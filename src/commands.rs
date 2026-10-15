@@ -819,7 +819,28 @@ pub async fn plugin_command(
         }
         return Ok(());
     };
-    let args = args.unwrap_or_else(|| "{}".to_string());
+    let mut args = args.unwrap_or_else(|| "{}".to_string());
+    // Contexte appelant : les plugins l'utilisent pour l'autorisation
+    // (propriétaire, rôles) — transmis en JSON, l'ABI reste inchangée.
+    let mut caller = serde_json::json!({
+        "id": ctx.author().id.to_string(),
+        "is_owner": ctx.data().state.is_owner(&ctx.author().id.to_string()),
+        "roles": [],
+    });
+    if let Some(guild) = ctx.guild_id() {
+        if let Ok(member) = ctx
+            .serenity_context()
+            .http
+            .get_member(guild, ctx.author().id)
+            .await
+        {
+            let roles: Vec<String> = member.roles.iter().map(|r| r.get().to_string()).collect();
+            caller["roles"] = serde_json::json!(roles);
+        }
+    }
+    let parsed: serde_json::Value = serde_json::from_str(&args).unwrap_or(serde_json::json!({}));
+    let wrapped = serde_json::json!({ "caller": caller, "args": parsed });
+    args = wrapped.to_string();
     match host.run(&nom, &commande, &args) {
         Ok(result) => {
             let body = format!("**{nom}** `{commande}` →\n```json\n{result}\n```");
