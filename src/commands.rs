@@ -1065,6 +1065,11 @@ pub async fn handle_error(err: poise::FrameworkError<'_, Data, Error>) {
                 )))
                 .await;
         }
+        poise::FrameworkError::UnknownInteraction { .. } => {
+            // Interactions des groupes de plugins (/dw, /saves…) : gérées par
+            // le hook d'événements plugin_commands, pas par le dispatch poise.
+            // Rien à faire ici — sans ce bras, chaque appel loggue une erreur.
+        }
         other => {
             crate::logger::error(format!("Framework error: {other}"));
         }

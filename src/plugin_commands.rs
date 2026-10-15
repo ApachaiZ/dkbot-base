@@ -125,18 +125,29 @@ pub async fn handle_plugin_interaction(
 
     let body = match outcome {
         Ok(Ok(result)) => {
+            // Embed : la description accepte 4096 caractères (le contenu de
+            // message n'en accepte que 2000 — /dw players dépassait et
+            // l'édition échouait en silence, laissant le spinner infini).
             let capped = crate::commands::cap_embed(&result, 3900);
-            format!("🐉 `{}` →\n```json\n{capped}\n```", display_name)
+            let title = format!("🐉 `/{group} {display_name}`");
+            crate::embeds::card(&title, &format!("```json\n{capped}\n```"), crate::embeds::Tone::Good, None)
         }
-        Ok(Err(e)) => e,
-        Err(join) => format!("tâche interrompue : {join}"),
+        Ok(Err(e)) => crate::embeds::card(
+            &format!("🐉 `/{group} {display_name}`"),
+            &format!("Erreur du plugin : {e}"),
+            crate::embeds::Tone::Bad,
+            None,
+        ),
+        Err(join) => crate::embeds::card(
+            &format!("🐉 `/{group} {display_name}`"),
+            &format!("Tâche interrompue : {join}"),
+            crate::embeds::Tone::Bad,
+            None,
+        ),
     };
 
     let _ = command
-        .edit_response(
-            &ctx.http,
-            serenity::EditInteractionResponse::new().content(body),
-        )
+        .edit_response(&ctx.http, serenity::EditInteractionResponse::new().add_embed(body))
         .await;
     true
 }
