@@ -51,6 +51,51 @@ fn option_from_manifest(arg: &ManifestArg) -> serenity::CreateCommandOption {
         .required(arg.required)
 }
 
+/// Rendu d'un résultat de plugin : carte (convention `{"card": …}`) quand le
+/// plugin la fournit, sinon bloc JSON brut plafonné. Partagé par les slash
+/// commands dynamiques et la commande texte `!plugin run`.
+pub fn render_result(fallback_title: &str, result: &str) -> serenity::CreateEmbed {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(result) else {
+        let body = crate::commands::cap_embed(result, 3900);
+        return crate::embeds::card(fallback_title, &body, crate::embeds::Tone::Good, None);
+    };
+    if let Some(card) = value.get("card").and_then(|c| c.as_object()) {
+        return card_to_embed(card);
+    }
+    let body = crate::commands::cap_embed(&format!("```json\n{result}\n```"), 3900);
+    crate::embeds::card(fallback_title, &body, crate::embeds::Tone::Good, None)
+}
+
+fn card_to_embed(card: &serde_json::Map<String, serde_json::Value>) -> serenity::CreateEmbed {
+    let title = card.get("title").and_then(|v| v.as_str()).unwrap_or("");
+    let description = card
+        .get("description")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let tone = match card.get("tone").and_then(|v| v.as_str()).unwrap_or("info") {
+        "good" => crate::embeds::Tone::Good,
+        "bad" => crate::embeds::Tone::Bad,
+        "wait" => crate::embeds::Tone::Wait,
+        _ => crate::embeds::Tone::Info,
+    };
+    let fields: Vec<(String, String, bool)> = card
+        .get("fields")
+        .and_then(|f| f.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|f| {
+                    let name = f.get("name")?.as_str()?.to_string();
+                    let value = f.get("value")?.as_str()?.to_string();
+                    let inline = f.get("inline").and_then(|b| b.as_bool()).unwrap_or(false);
+                    Some((name, value, inline))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let footer = card.get("footer").and_then(|v| v.as_str());
+    crate::embeds::card_with_fields(title, description, tone, fields, footer)
+}
+
 /// Gère une interaction de plugin (appelé depuis le hook d'événements de
 /// poise) : renvoie `true` si l'interaction a été consommée.
 pub async fn handle_plugin_interaction(
@@ -125,12 +170,7 @@ pub async fn handle_plugin_interaction(
 
     let body = match outcome {
         Ok(Ok(result)) => {
-            // Embed : la description accepte 4096 caractères (le contenu de
-            // message n'en accepte que 2000 — /dw players dépassait et
-            // l'édition échouait en silence, laissant le spinner infini).
-            let capped = crate::commands::cap_embed(&result, 3900);
-            let title = format!("🐉 `/{group} {display_name}`");
-            crate::embeds::card(&title, &format!("```json\n{capped}\n```"), crate::embeds::Tone::Good, None)
+            crate::plugin_commands::render_result(&format!("`/{group} {display_name}`"), &result)
         }
         Ok(Err(e)) => crate::embeds::card(
             &format!("🐉 `/{group} {display_name}`"),
@@ -179,6 +219,38 @@ mod tests {
         }
         groups.push(group);
         assert_eq!(groups.len(), 1);
+    }
+
+    #[test]
+    fn renders_card_from_plugin_json() {
+        let raw = r#"{"card":{"title":"🐉 Statut du serveur","description":"en ligne","tone":"good","fields":[{"name":"👥 Joueurs","value":"2","inline":true},{"name":"🌍 Monde","value":"ApaWorld","inline":true}]}}"#;
+        let embed = render_result("fallback", raw);
+        let json = serde_json::to_value(&embed).expect("sérialisable");
+        assert_eq!(json["title"], "🐉 Statut du serveur");
+        assert_eq!(json["description"], "en ligne");
+        let fields = json["fields"].as_array().expect("champs");
+        assert_eq!(fields.len(), 2);
+        assert_eq!(fields[0]["name"], "👥 Joueurs");
+        assert_eq!(fields[0]["value"], "2");
+    }
+
+    #[test]
+    fn falls_back_to_json_block_without_card() {
+        let raw = "{\"count\":0,\"players\":[]}";
+        let embed = render_result("`/dw players`", raw);
+        let json = serde_json::to_value(&embed).expect("sérialisable");
+        assert_eq!(json["title"], "`/dw players`");
+        assert!(json["description"]
+            .as_str()
+            .expect("description")
+            .contains("```json"));
+    }
+
+    #[test]
+    fn handles_non_json_result() {
+        let embed = render_result("x", "réponse illisible");
+        let json = serde_json::to_value(&embed).expect("sérialisable");
+        assert_eq!(json["description"], "réponse illisible");
     }
 
     #[test]

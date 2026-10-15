@@ -376,12 +376,17 @@ mod tests {
             "{\"plugin\":\"dummy-plugin\",\"reply\":\"pong\"}"
         );
         if loaded.contains(&"saves".to_string()) {
-            let cmds = host.list_commands("saves").unwrap();
-            assert!(cmds.contains(&"backup".to_string()), "commandes : {cmds:?}");
+            let (_, manifest) = host
+                .manifests()
+                .into_iter()
+                .find(|(n, _)| n == "saves")
+                .expect("manifeste saves");
+            assert_eq!(manifest.group, "saves");
+            assert!(manifest.commands.iter().any(|c| c.name == "backup"));
             let out = host
                 .run("saves", "list", "{\"caller\":{\"is_owner\":true},\"args\":{}}")
                 .unwrap();
-            assert!(out.contains("error") || out.contains("backups"), "réponse : {out}");
+            assert!(out.contains("card"), "réponse carte attendue : {out}");
         }
         if loaded.contains(&"dragonwilds".to_string()) {
             let (_, manifest) = host
@@ -412,7 +417,7 @@ mod tests {
             let out = host
                 .run("dragonwilds", "cheats", "{\"caller\":{\"is_owner\":true},\"args\":{}}")
                 .unwrap();
-            assert!(out.contains("cheats_enabled"), "réponse : {out}");
+            assert!(out.contains("card"), "réponse carte attendue : {out}");
         }
     }
 

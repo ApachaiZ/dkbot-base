@@ -884,12 +884,11 @@ pub async fn plugin_command(
     .await;
     match outcome {
         Ok(Ok(result)) => {
-            let body = cap_embed(
-                &format!("**{nom}** `{commande}` →\n```json\n{result}\n```"),
-                3900,
+            let embed = crate::plugin_commands::render_result(
+                &format!("**{nom}** `{commande}`"),
+                &result,
             );
-            ctx.send(reply(card("🔌 Plugins", &body, Tone::Good, None)))
-                .await?;
+            ctx.send(reply(embed)).await?;
         }
         Ok(Err(e)) => {
             ctx.send(reply(card("🔌 Plugins", &e, Tone::Bad, None)))

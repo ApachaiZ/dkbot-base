@@ -43,6 +43,22 @@ pub fn card(title: &str, text: &str, tone: Tone, footer: Option<&str>) -> Create
         .timestamp(Timestamp::now())
 }
 
+/// Carte standard avec champs (name / value / inline) — utilisée pour les
+/// réponses formatées des plugins (convention `{"card": …}`).
+pub fn card_with_fields(
+    title: &str,
+    text: &str,
+    tone: Tone,
+    fields: Vec<(String, String, bool)>,
+    footer: Option<&str>,
+) -> CreateEmbed {
+    let mut embed = card(title, text, tone, footer);
+    for (name, value, inline) in fields {
+        embed = embed.field(name, value, inline);
+    }
+    embed
+}
+
 /// État d'un service, en minuscules.
 pub fn state(status: &Status) -> String {
     status.state.trim().to_lowercase()
