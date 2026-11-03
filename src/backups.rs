@@ -38,7 +38,7 @@ pub async fn list(
     let Some((alias, unit)) = resolve_service_opt(&ctx, service.as_deref()).await? else {
         return Ok(());
     };
-    if ctx.data().cfg.saves_path.is_none() {
+    if ctx.data().cfg.saves_path_for(&alias).is_none() {
         ctx.send(reply(card(b.list_title, b.no_saves, Tone::Info, None)))
             .await?;
         return Ok(());
@@ -98,7 +98,7 @@ pub async fn restore(
     let Some((alias, _)) = resolve_service_opt(&ctx, service.as_deref()).await? else {
         return Ok(());
     };
-    if ctx.data().cfg.saves_path.is_none() {
+    if ctx.data().cfg.saves_path_for(&alias).is_none() {
         ctx.send(reply(card(b.list_title, b.no_saves, Tone::Info, None)))
             .await?;
         return Ok(());

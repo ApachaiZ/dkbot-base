@@ -8,6 +8,7 @@
 //! systemd et tout superviseur ne redémarrent PAS en boucle sur une config
 //! invalide.
 
+use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -78,6 +79,9 @@ pub struct Config {
     /// Chemin ABSOLU des sauvegardes du jeu sur la machine cible
     /// (`SAVES_PATH`). `None` = pas de copie de sauvegarde.
     pub saves_path: Option<String>,
+    /// Chemins de sauvegarde par service (`SAVES_PATHS`, `alias=/chemin,...`).
+    /// Prioritaire sur `SAVES_PATH` pour l'alias concerné.
+    pub saves_paths: HashMap<String, String>,
     /// Délai maximal d'une copie de sauvegarde (les saves peuvent être
     /// volumineux — indépendant du timeout SSH des commandes ordinaires).
     pub saves_copy_timeout: Duration,
@@ -91,6 +95,15 @@ impl Config {
     /// tâches détachées (watchdog) qui ne reçoivent pas le catalogue.
     pub fn language_catalog(&self) -> &'static Catalog {
         crate::i18n::catalog(self.language)
+    }
+
+    /// Chemin de sauvegarde effectif pour un alias de service :
+    /// `SAVES_PATHS` (par alias) prioritaire, puis `SAVES_PATH` global.
+    pub fn saves_path_for(&self, service: &str) -> Option<&str> {
+        self.saves_paths
+            .get(service)
+            .map(String::as_str)
+            .or(self.saves_path.as_deref())
     }
 }
 
@@ -126,6 +139,42 @@ fn parse_u64(value: Option<&str>, default: u64, min: u64) -> u64 {
 /// interpolé dans une ligne de commande).
 pub fn valid_saves_path(path: &str) -> bool {
     path.starts_with('/') && !path.chars().any(|c| c.is_control())
+}
+
+/// Parse `alias=/chemin,alias2=/chemin2` (`SAVES_PATHS`). Chaque chemin doit
+/// être absolu et l'alias doit être un alias de service valide.
+pub fn parse_saves_paths(raw: Option<&str>) -> Result<HashMap<String, String>, ExitError> {
+    let mut out = HashMap::new();
+    let Some(raw) = raw else { return Ok(out) };
+    for pair in raw.split(',') {
+        let pair = pair.trim();
+        if pair.is_empty() {
+            continue;
+        }
+        let Some(eq) = pair.find('=') else {
+            return Err(ExitError::config(format!(
+                "SAVES_PATHS entry must be alias=/absolute/path: \"{pair}\""
+            )));
+        };
+        let alias = pair[..eq].trim();
+        let path = pair[eq + 1..].trim();
+        if alias.is_empty()
+            || !alias
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+        {
+            return Err(ExitError::config(format!(
+                "SAVES_PATHS alias must be letters, digits, '-' or '_': \"{alias}\""
+            )));
+        }
+        if !valid_saves_path(path) {
+            return Err(ExitError::config(format!(
+                "SAVES_PATHS path for \"{alias}\" must be absolute without control characters: \"{path}\""
+            )));
+        }
+        out.insert(alias.to_string(), path.to_string());
+    }
+    Ok(out)
 }
 
 /// Charge la configuration. Le provider n'existe plus : les backends
@@ -186,6 +235,7 @@ pub fn load(catalog: &Catalog, language: &'static str) -> Result<Config, ExitErr
         }
         p => p,
     };
+    let saves_paths = parse_saves_paths(env("SAVES_PATHS").as_deref())?;
 
     let ssh_user = env("SSH_USER")
         .or_else(|| std::env::var("USER").ok().filter(|v| !v.is_empty()))
@@ -220,6 +270,7 @@ pub fn load(catalog: &Catalog, language: &'static str) -> Result<Config, ExitErr
         log_mode,
         log_lines: parse_u64(env("LOG_LINES").as_deref(), 50, 1) as u32,
         saves_path,
+        saves_paths,
         saves_copy_timeout: Duration::from_secs(parse_u64(
             env("SAVES_COPY_TIMEOUT_SECS").as_deref(),
             600,
@@ -290,5 +341,21 @@ mod tests {
         assert!(!valid_saves_path(""));
         assert!(!valid_saves_path("/opt/game\nsaves"));
         assert!(!valid_saves_path("/opt/game/saves\x00"));
+    }
+
+    #[test]
+    fn saves_paths_parse_and_validate() {
+        let map = parse_saves_paths(Some(
+            "game=/opt/game/saves, valheim=/home/steam/valheim-data/worlds_local",
+        ))
+        .expect("valid SAVES_PATHS");
+        assert_eq!(map.get("game").map(String::as_str), Some("/opt/game/saves"));
+        assert_eq!(
+            map.get("valheim").map(String::as_str),
+            Some("/home/steam/valheim-data/worlds_local")
+        );
+        assert!(parse_saves_paths(Some("game=relative")).is_err());
+        assert!(parse_saves_paths(Some("bad alias=/opt/x")).is_err());
+        assert!(parse_saves_paths(Some("game=/opt/game\nsaves")).is_err());
     }
 }

@@ -132,7 +132,7 @@ dkbot update                   # mise à jour auto depuis les releases GitHub (m
 | `SSH_KNOWN_HOSTS_FILE` `SSH_TIMEOUT_SECS` | Durcissement SSH |
 | `SYSTEMCTL_PREFIX` | ex. `sudo -n` quand root est requis |
 | `LOG_FILE` `LOG_LINES` | Stockage des logs / nombre de lignes par défaut |
-| `SAVES_PATH` `SAVES_COPY_TIMEOUT_SECS` | Copie des sauvegardes du jeu (voir 💾) |
+| `SAVES_PATH` `SAVES_PATHS` `SAVES_COPY_TIMEOUT_SECS` | Copie des sauvegardes du jeu, globale ou par service (voir 💾) |
 | `WATCHDOG_CPU_PCT` `WATCHDOG_RAM_PCT` `WATCHDOG_DISK_PCT` | Seuils du watchdog |
 | `BOT_LANGUAGE` | `en` / `fr` |
 
@@ -200,9 +200,17 @@ L'hôte transforme chaque commande du manifeste en sous-commande typée au déma
 ## 💾 Sauvegardes du jeu
 
 `/backups` archive le dossier des sauvegardes du jeu (configurable via
-`SAVES_PATH`), conservées et purgées localement. Le plugin compagnon
-**dkbots-saves** ajoute `/saves backup|list|restore` (propriétaire
-uniquement) avec emplacement d'archive et rétention configurables.
+`SAVES_PATH`), conservées et purgées localement. Quand plusieurs serveurs de
+jeu tournent sur la même machine, `SAVES_PATHS` associe un chemin à chaque
+alias de service (il est prioritaire sur `SAVES_PATH`) :
+
+```env
+SAVES_PATHS=game=/home/steam/dragonwilds_linux_server/RSDragonwilds/Saved/SaveGames,valheim=/home/steam/valheim-data/worlds_local
+```
+
+Le plugin compagnon **dkbots-saves** ajoute `/saves backup|list|restore`
+(propriétaire uniquement) avec emplacement d'archive et rétention
+configurables.
 
 ---
 

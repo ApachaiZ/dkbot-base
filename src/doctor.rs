@@ -82,11 +82,9 @@ pub async fn run() -> i32 {
     }
 
     // ── 5. Sauvegardes ──
-    match &cfg.saves_path {
-        Some(saves) => match api
-            .backups_list(&cfg.targets[0].alias, &cfg.services[0].0)
-            .await
-        {
+    let first_service = &cfg.services[0].0;
+    match cfg.saves_path_for(first_service) {
+        Some(saves) => match api.backups_list(&cfg.targets[0].alias, first_service).await {
             Ok(out) if out.trim() == "NOBACKUPS" => println!(
                 "⚠ Sauvegardes : {}-backups/ existe mais aucune archive pour l'instant",
                 saves
@@ -101,7 +99,7 @@ pub async fn run() -> i32 {
                 problems += 1;
             }
         },
-        None => println!("ℹ SAVES_PATH non configuré — pas de sauvegarde."),
+        None => println!("ℹ SAVES_PATH / SAVES_PATHS non configuré — pas de sauvegarde."),
     }
 
     // ── 6. Canaux Discord ──

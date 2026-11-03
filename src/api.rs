@@ -182,7 +182,7 @@ impl Api {
         service: &str,
         deadline: Instant,
     ) -> BackupOutcome {
-        let Some(saves) = self.cfg.saves_path.clone() else {
+        let Some(saves) = self.cfg.saves_path_for(service).map(str::to_string) else {
             return BackupOutcome::NotConfigured;
         };
         let Some(unit) = self
@@ -226,8 +226,8 @@ impl Api {
     pub async fn backups_list(&self, target: &str, service: &str) -> Result<String, BackendError> {
         let saves = self
             .cfg
-            .saves_path
-            .clone()
+            .saves_path_for(service)
+            .map(str::to_string)
             .ok_or_else(|| BackendError::other("SAVES_PATH not configured"))?;
         let unit = self
             .cfg
@@ -248,8 +248,8 @@ impl Api {
     ) -> Result<String, BackendError> {
         let saves = self
             .cfg
-            .saves_path
-            .clone()
+            .saves_path_for(service)
+            .map(str::to_string)
             .ok_or_else(|| BackendError::other("SAVES_PATH not configured"))?;
         let unit = self
             .cfg
