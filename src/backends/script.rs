@@ -219,7 +219,7 @@ if [ ! -d "$BASE" ]; then
   echo "NOBACKUPS"
   exit 0
 fi
-ls -la "$BASE" | sed '1d'
+ls -la "$BASE" | sed '1d' | grep '\.tar$' || echo "NOBACKUPS"
 "##;
 
 /// Script POSIX embarqué : RESTAURATION d'une archive (`sh -s -- <saves>
